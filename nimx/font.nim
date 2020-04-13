@@ -1,26 +1,23 @@
-import types
-import system_logger
-import unicode
-import streams
-import nimx.resource
-import nimx.timer
-import nimx.private.font.font_data
+import unicode, streams, logging
+
+import nimx / [ types, timer, portable_gl ]
+import nimx/private/font/font_data
 
 when defined(js):
-    import private.font.js_glyph_provider
+    import private/font/js_glyph_provider
     type GlyphProvider = JsGlyphProvider
 else:
-    import private.font.stb_ttf_glyph_provider
+    import private/font/stb_ttf_glyph_provider
     type GlyphProvider = StbTtfGlyphProvider
 
     import os
     import write_image_impl
 
-import private.edtaa3func # From ttf library
-import private.simple_table
+import ttf/edtaa3func
+import private/simple_table
 
-import opengl
-import portable_gl
+when defined(android):
+    import nimx/assets/url_stream
 
 type Baseline* = enum
     bTop
@@ -181,43 +178,7 @@ const preferredFonts = when defined(js) or defined(windows) or defined(emscripte
         ]
 
 when not defined(js):
-    const fontSearchPaths = when defined(macosx):
-            [
-                "/Library/Fonts"
-            ]
-        elif defined(android):
-            [
-                "/system/fonts"
-            ]
-        elif defined(windows):
-            [
-                r"c:\Windows\Fonts" #todo: system will not always in the c disk
-            ]
-        elif defined(emscripten):
-            [
-                "res"
-            ]
-        else:
-            [
-                "/usr/share/fonts/truetype",
-                "/usr/share/fonts/truetype/ubuntu-font-family",
-                "/usr/share/fonts/TTF",
-                "/usr/share/fonts/truetype/dejavu"
-            ]
-
-when not defined(js):
-    iterator potentialFontFilesForFace(face: string): string =
-        for sp in fontSearchPaths:
-            yield sp / face & ".ttf"
-        when not defined(emscripten):
-            yield getAppDir() / "res" / face & ".ttf"
-            yield getAppDir() /../ "Resources" / face & ".ttf"
-            yield getAppDir() / face & ".ttf"
-
-    proc findFontFileForFace(face: string): string =
-        for f in potentialFontFilesForFace(face):
-            if fileExists(f):
-                return f
+    import nimx/private/font/fontconfig
 
 proc getAvailableFonts*(isSystem: bool = false): seq[string] =
     result = newSeq[string]()
@@ -239,16 +200,18 @@ proc newFontWithFace*(face: string, size: float): Font =
         result.glyphMargin = 8
     else:
         let path = findFontFileForFace(face)
-        if path != nil:
+        if path.len != 0:
             result = newFontWithFile(path, size)
-
         else:
             when defined(android):
                 let path = face & ".ttf"
-                let ff = streamForResourceWithPath(path)
-                if not ff.isNil:
-                    ff.close()
-                    result = newFontWithFile("res://" & path, size)
+                let url = "res://" & path
+                var s: Stream
+                openStreamForURL(url) do(st: Stream, err: string):
+                    s = st
+                if not s.isNil:
+                    s.close()
+                    result = newFontWithFile(url, size)
 
 proc systemFontSize*(): float = 16
 
@@ -265,17 +228,17 @@ proc systemFontOfSize*(size: float): Font =
         if result != nil: return
 
     when not defined(js):
-        logi "ERROR: Could not find system font:"
+        error "Could not find system font:"
         for face in preferredFonts:
             for f in potentialFontFilesForFace(face):
-                logi "Tried path '", f, "'"
+                error "Tried path '", f, "'"
 
 proc systemFont*(): Font =
     if sysFont == nil:
         sysFont = systemFontOfSize(systemFontSize())
     result = sysFont
     if result == nil:
-        logi "WARNING: Could not create system font"
+        warn "Could not create system font"
 
 var dfCtx : DistanceFieldContext[float32]
 
@@ -312,14 +275,14 @@ var chunksToGen = newSeq[CharInfo]()
 
 proc generateDistanceFields() =
     let ch = chunksToGen[^1]
-    if not ch.data.dfDoneForGlyph.isNil:
+    if ch.data.dfDoneForGlyph.len != 0:
         for i in 0 ..< charChunkLength:
             if not ch.data.dfDoneForGlyph[i]:
                 generateDistanceFieldForGlyph(ch, i, true)
                 return
     chunksToGen.setLen(chunksToGen.len - 1)
-    ch.data.bitmap = nil
-    ch.data.dfDoneForGlyph = nil
+    ch.data.bitmap.setLen(0)
+    ch.data.dfDoneForGlyph.setLen(0)
     if chunksToGen.len == 0:
         glyphGenerationTimer.clear()
         glyphGenerationTimer = nil
@@ -360,7 +323,7 @@ proc chunkAndCharIndexForRune(f: Font, r: Rune): tuple[ch: CharInfo, index: int]
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
             #gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST)
             #gl.generateMipmap(gl.TEXTURE_2D)
-        elif not ch.data.dfDoneForGlyph.isNil and not ch.data.dfDoneForGlyph[result.index]:
+        elif ch.data.dfDoneForGlyph.len != 0 and not ch.data.dfDoneForGlyph[result.index]:
             generateDistanceFieldForGlyph(ch, result.index, true)
 
 proc getQuadDataForRune*(f: Font, r: Rune, quad: var openarray[Coord], offset: int, texture: var TextureRef, pt: var Point) =

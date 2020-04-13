@@ -1,10 +1,6 @@
-import nimx.view
-import nimx.image
-import nimx.context
-import nimx.render_to_image
-import nimx.font
-import nimx.assets.asset_manager
 import sample_registry
+import nimx / [ view, image, context, render_to_image, font ]
+import nimx/assets/asset_manager
 
 type ImageSampleView = ref object of View
     image: Image
@@ -22,8 +18,8 @@ method init*(v: ImageSampleView, r: Rect) =
         v.setNeedsDisplay()
 
 proc renderToImage(): Image =
-    result = imageWithSize(newSize(200, 80))
-    result.draw do():
+    let r = imageWithSize(newSize(200, 80))
+    r.draw do():
         let c = currentContext()
         c.fillColor = newColor(0.5, 0.5, 1)
         c.strokeColor = newColor(1, 0, 0)
@@ -32,6 +28,7 @@ proc renderToImage(): Image =
         c.fillColor = blackColor()
         let font = systemFontOfSize(32)
         c.drawText(font, newPoint(10, 25), "Runtime image")
+    result = r
 
 method draw(v: ImageSampleView, r: Rect) =
     if v.generatedImage.isNil:

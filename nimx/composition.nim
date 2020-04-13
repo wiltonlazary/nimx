@@ -1,7 +1,7 @@
 import context, types, portable_gl, image
-import private.helper_macros
+import private/helper_macros
 import strutils, tables, hashes
-import nimsl.nimsl
+import nimsl/nimsl
 
 export portable_gl
 export context
@@ -212,7 +212,7 @@ void drawShape(float dist, vec4 color) {
 // Draw shape without taking underlying fragments in account
 void drawInitialShape(float dist, vec4 color) {
     gl_FragColor = color;
-    gl_FragColor.w = fillAlpha(dist);
+    gl_FragColor.w *= fillAlpha(dist);
 }
 
 // Same as drawShape, but respects source alpha
@@ -226,25 +226,29 @@ proc fillAlpha*(dist: float32): float32 =
     result = 1.0 - smoothstep(-d, d, dist)
     #    return 1.0 - step(0.0, dist); # No antialiasing
 
-proc drawShape*(res: var vec4, dist: float32, color: vec4) =
+proc drawShape*(res: var Vec4, dist: float32, color: Vec4) =
     res = mix(res, color, fillAlpha(dist))
 
-proc sdRect*(p: vec2, rect: vec4): float32 =
+proc drawInitialShape*(res: var Vec4, dist: float32, color: Vec4) =
+    res = color
+    res.w *= fillAlpha(dist)
+
+proc sdRect*(p: Vec2, rect: Vec4): float32 =
     let b = rect.zw / 2.0
     let dp = p - (rect.xy + b)
     let d = abs(dp) - b
     result = min(max(d.x, d.y), 0.0) + length(max(d, 0.0))
 
-proc sdEllipseInRect*(pos: vec2, rect: vec4): float32 =
+proc sdEllipseInRect*(pos: Vec2, rect: Vec4): float32 =
     let ab = rect.zw / 2.0
     let center = rect.xy + ab
     let p = pos - center
     result = dot(p * p, 1.0 / (ab * ab)) - 1.0
     result *= min(ab.x, ab.y)
 
-proc insetRect*(r: vec4, by: float32): vec4 = newVec4(r.xy + by, r.zw - by * 2.0)
+proc insetRect*(r: Vec4, by: float32): Vec4 = newVec4(r.xy + by, r.zw - by * 2.0)
 
-proc vertexShader(aPosition: vec2, uModelViewProjectionMatrix: mat4, uBounds: vec4, vPos: var vec2): vec4 =
+proc vertexShader(aPosition: Vec2, uModelViewProjectionMatrix: Mat4, uBounds: Vec4, vPos: var Vec2): Vec4 =
     vPos = uBounds.xy + aPosition * uBounds.zw
     result = uModelViewProjectionMatrix * newVec4(vPos, 0.0, 1.0);
 
@@ -280,9 +284,10 @@ const posAttr : GLuint = 0
 
 proc replaceSymbolsInLine(syms: openarray[string], ln: string): string {.compileTime.} =
     result = ln
-    for s in syms:
-        result = result.replaceWord(s & ".tex", s & "_tex")
-        result = result.replaceWord(s & ".texCoords", s & "_texCoords")
+    if result.len != 0:
+        for s in syms:
+            result = result.replaceWord(s & ".tex", s & "_tex")
+            result = result.replaceWord(s & ".texCoords", s & "_texCoords")
 
 #[
 proc uniforNamesFromShaderCode(code: string): seq[string] =
@@ -334,7 +339,7 @@ proc newComposition*(vsDef, fsDef: static[string], requiresPrequel: bool = true,
     result.id = hash(preprocessedDefinition)
 
 template newComposition*(definition: static[string], requiresPrequel: bool = true): Composition =
-    newComposition(nil, definition, requiresPrequel)
+    newComposition("", definition, requiresPrequel)
 
 template newCompositionWithNimsl*(mainProc: typed): Composition =
     newComposition(getGLSLFragmentShader(mainProc, "compose"), false)
@@ -359,7 +364,7 @@ proc postEffectUniformName(postEffectIndex, argIndex: int): string =
 proc compileComposition*(gl: GL, comp: Composition, cchash: Hash): CompiledComposition =
     var fragmentShaderCode = ""
 
-    if (not comp.definition.isNil and comp.definition.find("GL_OES_standard_derivatives") < 0) or comp.requiresPrequel:
+    if (comp.definition.len != 0 and comp.definition.find("GL_OES_standard_derivatives") < 0) or comp.requiresPrequel:
         fragmentShaderCode &= """
             #ifdef GL_ES
             #extension GL_OES_standard_derivatives : enable
@@ -418,7 +423,7 @@ proc compileComposition*(gl: GL, comp: Composition, cchash: Hash): CompiledCompo
     fragmentShaderCode &= "}"
 
     result.new()
-    let vsCode = if comp.vsDefinition.isNil:
+    let vsCode = if comp.vsDefinition.len == 0:
             options & vertexShaderCode
         else:
             options & comp.vsDefinition
@@ -539,9 +544,8 @@ template setupPosteffectUniforms*(cc: CompiledComposition) =
     for pe in postEffectStack:
         pe.setupProc(cc)
 
-var overdrawValue = 0
-template GetOverdrawValue*() : int =
-    int(overdrawValue.float32 / 1000.float32)
+var overdrawValue = 0'f32
+template GetOverdrawValue*() : float32 = overdrawValue / 1000
 
 template ResetOverdrawValue*() =
     overdrawValue = 0
@@ -553,35 +557,35 @@ template GetDIPValue*() : int =
 template ResetDIPValue*() =
     DIPValue = 0
 
-template draw*(comp: var Composition, r: Rect, code: untyped): typed =
-    let ctx = currentContext()
-    let gl = ctx.gl
-    let cc = gl.getCompiledComposition(comp)
-    gl.useProgram(cc.program)
-
-    overdrawValue += int(r.size.width * r.size.height)
-    DIPValue += 1
-
-    const componentCount = 2
-    const vertexCount = 4
-    gl.bindBuffer(gl.ARRAY_BUFFER, ctx.singleQuadBuffer)
-    gl.enableVertexAttribArray(posAttr)
-    gl.vertexAttribPointer(posAttr, componentCount, gl.FLOAT, false, 0, 0)
-
-    compositionDrawingDefinitions(cc, ctx, gl)
-
-    gl.uniformMatrix4fv(uniformLocation("uModelViewProjectionMatrix"), false, ctx.transform)
-
-    setUniform("bounds", r) # This is for fragment shader
-    setUniform("uBounds", r) # This is for vertex shader
-
-    setupPosteffectUniforms(cc)
-
+template draw*(comp: var Composition, r: Rect, code: untyped) =
     block:
-        code
-    gl.drawArrays(gl.TRIANGLE_FAN, 0, vertexCount)
-    gl.bindBuffer(gl.ARRAY_BUFFER, invalidBuffer)
+        let ctx = currentContext()
+        let gl = ctx.gl
+        let cc = gl.getCompiledComposition(comp)
+        gl.useProgram(cc.program)
 
-template draw*(comp: var Composition, r: Rect): typed =
+        overdrawValue += r.size.width * r.size.height
+        DIPValue += 1
+
+        const componentCount = 2
+        const vertexCount = 4
+        gl.bindBuffer(gl.ARRAY_BUFFER, ctx.singleQuadBuffer)
+        gl.enableVertexAttribArray(posAttr)
+        gl.vertexAttribPointer(posAttr, componentCount, gl.FLOAT, false, 0, 0)
+
+        compositionDrawingDefinitions(cc, ctx, gl)
+
+        gl.uniformMatrix4fv(uniformLocation("uModelViewProjectionMatrix"), false, ctx.transform)
+
+        setUniform("bounds", r) # This is for fragment shader
+        setUniform("uBounds", r) # This is for vertex shader
+
+        setupPosteffectUniforms(cc)
+
+        code
+        gl.drawArrays(gl.TRIANGLE_FAN, 0, vertexCount)
+        gl.bindBuffer(gl.ARRAY_BUFFER, invalidBuffer)
+
+template draw*(comp: var Composition, r: Rect) =
     comp.draw r:
         discard

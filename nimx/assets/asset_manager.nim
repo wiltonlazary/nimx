@@ -1,7 +1,7 @@
 import strutils, tables
 import variant
 import abstract_asset_bundle, asset_cache, url_stream, asset_loading, asset_loader
-import nimx.pathutils
+import nimx/pathutils
 
 type
     AssetManager* = ref object
@@ -90,6 +90,12 @@ proc unmount*(am: AssetManager, ab: AssetBundle) =
             am.mounts.del(i)
             break
 
+proc unmountAll*(am: AssetManager) =
+    am.mounts.setLen(0)
+
+proc assetBundleForPath*(am: AssetManager, path: string): AssetBundle =
+    am.mountForPath(path.normalizeSlashes).ab
+
 proc urlForResource*(am: AssetManager, path: string): string =
     var (a, _, p) = am.mountForPath(path.normalizeSlashes)
     result = a.urlForPath(p)
@@ -137,15 +143,15 @@ proc getAssetAtPathAux(am: AssetManager, path: string, putToCache: bool, handler
             if v.isEmpty:
                 handler(v, "Could not load asset " & path)
             else:
-                handler(v, nil)
+                handler(v, "")
     else:
-        handler(v, nil)
+        handler(v, "")
 
 proc getAssetAtPath*[T](am: AssetManager, path: string, putToCache: bool, handler: proc(res: T, err: string)) =
     am.getAssetAtPathAux(path, putToCache) do(res: Variant, err: string):
-        if err.isNil:
+        if err.len == 0:
             if res.ofType(T):
-                handler(res.get(T), nil)
+                handler(res.get(T), "")
             else:
                 var v: T
                 handler(v, "Wrong asset type")

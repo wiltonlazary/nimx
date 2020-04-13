@@ -1,27 +1,20 @@
-import macros
 
+template sdlMain*() =
+    when defined(ios) or defined(android):
+        when not compileOption("noMain"):
+            {.error: "Please run Nim with --noMain flag.".}
 
-when not defined(windows):
-
-    when defined(android):
-        import nimx.system_logger
-    {.push stackTrace: off.}
-    proc setupLogger() {.cdecl.}=
-        when defined(android):
+        import nimx/system_logger
+        {.push stackTrace: off.}
+        proc setupLogger() {.cdecl.} =
             errorMessageWriter = proc(msg: string) =
                 logi msg
-        else:
-            discard
-    {.pop.}
-    when not compileOption("noMain") and not defined(nimxAvoidSDL):
-        {.error: "Please run Nim with --noMain flag.".}
+        {.pop.}
 
-    when defined(ios):
-        {.emit: "#define __IPHONEOS__".}
+        when defined(ios):
+            {.emit: "#define __IPHONEOS__".}
 
-
-
-    {.emit: """
+        {.emit: """
 // The following piece of code is a copy-paste from SDL/SDL_main.h
 // It is required to avoid dependency on SDL headers
 ////////////////////////////////////////////////////////////////////////////////
@@ -103,6 +96,8 @@ when not defined(windows):
 
 //#include <SDL2/SDL_main.h>
 
+#include <stdlib.h>
+
 extern int cmdCount;
 extern char** cmdLine;
 extern char** gEnv;
@@ -115,6 +110,12 @@ int main(int argc, char** args) {
     gEnv = NULL;
     `setupLogger`();
     NimMain();
+#ifdef __ANDROID__
+    /* Prevent SDLActivity from calling main() again until the main lib
+    *  is reloaded
+    */
+    exit(nim_program_result);
+#endif
     return nim_program_result;
 }
 
@@ -122,6 +123,7 @@ int main(int argc, char** args) {
 
 when not defined(emscripten):
     when defined(macosx) or defined(ios):
+        import macros
         macro passToCAndL(s: string): typed =
             result = newNimNode(nnkStmtList)
             result.add parseStmt("{.passL: \"" & s.strVal & "\".}\n")
@@ -133,10 +135,14 @@ when not defined(emscripten):
                 result.add parseStmt("passToCAndL(\"-framework " & n[i].strVal & "\")")
 
     when defined(ios):
-        useFrameworks("OpenGLES", "UIKit", "GameController", "CoreMotion")
+        useFrameworks("OpenGLES", "UIKit", "GameController", "CoreMotion", "Metal", "AVFoundation", "CoreBluetooth")
         when not defined(simulator):
-            {.passC:"-arch armv7".}
-            {.passL:"-arch armv7".}
+            when hostCPU == "arm":
+                {.passC:"-arch armv7".}
+                {.passL:"-arch armv7".}
+            elif hostCPU == "arm64":
+                {.passC:"-arch arm64".}
+                {.passL:"-arch arm64".}
     elif defined(macosx):
         useFrameworks("OpenGL", "AppKit", "AudioUnit", "ForceFeedback", "IOKit", "Carbon", "CoreServices", "ApplicationServices")
 

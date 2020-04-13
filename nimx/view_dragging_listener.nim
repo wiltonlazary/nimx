@@ -1,17 +1,17 @@
-import nimx.gesture_detector
-import nimx.view
-import nimx.event
-import nimx.context
+import nimx/gesture_detector
+import nimx/view
+import nimx/event
+import nimx/context
 
 type DraggingScrollListener = ref object of OnScrollListener
     view: View
-    diff: Point
+    start: Point
 
 method onTapDown(ls: DraggingScrollListener, e: var Event) =
-    ls.diff = e.localPosition
+    ls.start = ls.view.frame.origin
 
 method onScrollProgress(ls: DraggingScrollListener, dx, dy : float32, e : var Event) =
-    ls.view.setFrameOrigin(e.position - ls.diff)
+    ls.view.setFrameOrigin(ls.start + newPoint(dx, dy))
 
 proc enableDraggingByBackground*(v: View) =
      var listener: DraggingScrollListener

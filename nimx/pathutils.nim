@@ -1,4 +1,15 @@
-import strutils, ospaths
+import strutils, os, parseutils
+
+proc urlParentDir*(url: string): string =
+    let schemeEnd = url.find(':')
+    if schemeEnd == -1 or url.len <= schemeEnd + 3 or url[schemeEnd + 1] != '/' or url[schemeEnd + 2] != '/':
+        raise newException(ValueError, "Invalid url: " & url)
+
+    let i = url.rfind({'/', '\\'})
+    if i <= schemeEnd + 3:
+        raise newException(ValueError, "Cannot get parent dir in url: " & url)
+
+    url[0 ..< i]
 
 proc relativePathToPath*(path, toPath: string): string =
     # Returns a relative path to `toPath` which is equivalent of absolute `path`
@@ -25,10 +36,13 @@ proc relativePathToPath*(path, toPath: string): string =
             result &= "/"
         inc cp
 
-proc normalizePath*(path: var string, normalizeSlashes: bool = true) =
+proc normalizePath*(path: var string, usePlatformSeparator: bool = true) =
     let ln = path.len
     var j = 0
     var i = 0
+
+    let targetSeparator = if usePlatformSeparator:(when defined(windows):'\\'else:'/')else:'/'
+    let replaceSeparator = if usePlatformSeparator:(when defined(windows):'/'else:'\\')else:'\\'
 
     template isSep(c: char): bool = c == '/' or c == '\\'
     template rollback() =
@@ -55,11 +69,7 @@ proc normalizePath*(path: var string, normalizeSlashes: bool = true) =
                             i += 2
         if copyChar:
             path[j] = path[i]
-            if normalizeSlashes:
-                when defined(windows):
-                    if path[j] == '/': path[j] = '\\'
-                else:
-                    if path[j] == '\\': path[j] = '/'
+            if path[j] == replaceSeparator: path[j] = targetSeparator
 
             inc j
             inc i
@@ -87,7 +97,7 @@ when defined(js):
         """.}
         result = $s
 elif defined(emscripten):
-    import jsbind.emscripten
+    import jsbind/emscripten
 
     proc getCurrentHref*(): string =
         let r = EM_ASM_INT """
@@ -95,8 +105,22 @@ elif defined(emscripten):
         """
         result = cast[string](r)
 
+iterator uriParamsPairs*(s: string): (string, string) =
+    var i = s.skipUntil('?') + 1
+    while i < s.len:
+        var k, v: string
+        i += s.parseUntil(k, '=', i) + 1
+        i += s.parseUntil(v, '&', i) + 1
+        yield (k, v)
+
+proc uriParam*(url, key: string, default: string = ""): string =
+    for k, v in url.uriParamsPairs:
+        if k == key: return v
+    return default
+
 when isMainModule:
     doAssert(relativePathToPath("/a/b/c/d/e", "/a/b/c/f/g") == "../../f/g")
     doAssert("a/b/c".isSubpathOf("a/b"))
     doAssert(not "a/b/ca".isSubpathOf("a/b/c"))
     doAssert("a/b/c/a".isSubpathOf("a/b/c/"))
+    doAssert(urlParentDir("file://a/b") == "file://a")

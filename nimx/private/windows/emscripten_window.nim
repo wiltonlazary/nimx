@@ -1,9 +1,9 @@
-import nimx/[ abstract_window, system_logger, view, context, event, app, screen,
-            portable_gl, linkage_details ]
+import nimx/[ abstract_window, view, context, event, app, screen,
+            portable_gl, linkage_details, notification_center ]
 import opengl
-import unicode, times
-import jsbind, jsbind.emscripten
-import nimx.private.js_vk_map
+import unicode, times, logging
+import jsbind, jsbind/emscripten
+import nimx/private/js_vk_map
 
 type EmscriptenWindow* = ref object of Window
     ctx: EMSCRIPTEN_WEBGL_CONTEXT_HANDLE
@@ -11,12 +11,74 @@ type EmscriptenWindow* = ref object of Window
     canvasId: string
     textInputActive: bool
 
-method enableAnimation*(w: EmscriptenWindow, flag: bool) =
+method fullscreenAvailable*(w: EmscriptenWindow): bool =
+    return EM_ASM_INT("""
+        var result = false;
+        if (document.fullscreenEnabled !== undefined) {
+            result = document.fullscreenEnabled;
+        } else if (document.webkitFullscreenEnabled !== undefined) {
+            result = document.webkitFullscreenEnabled;
+        } else if (document.mozFullScreenEnabled !== undefined) {
+            result = document.mozFullScreenEnabled;
+        } else if (document.msFullscreenEnabled !== undefined) {
+            result = document.msFullscreenEnabled;
+        }
+        return result ? 1 : 0;
+    """) != 0
+
+proc onFullscreenChange*(eventType: cint, fullscreenChangeEvent: ptr EmscriptenFullscreenChangeEvent, userData: pointer): EM_BOOL {.cdecl.} =
+    sharedNotificationCenter().postNotification("WINDOW_FULLSCREEN_HAS_BEEN_CHANGED", newVariant((window: cast[Window](userData), fullscreen: bool(fullscreenChangeEvent.isFullscreen))))
+
+method fullscreen*(w: EmscriptenWindow): bool =
+    return EM_ASM_INT("""
+        var result = false;
+        if (document.fullscreenElement !== undefined) {
+            result = document.fullscreenElement !== null;
+        } else if (document.webkitFullscreenElement !== undefined) {
+            result = document.webkitFullscreenElement !== null;
+        } else if (document.mozFullScreenElement !== undefined) {
+            result = document.mozFullScreenElement !== null;
+        } else if (document.msFullscreenElement !== undefined) {
+            result = document.msFullscreenElement !== null;
+        }
+        return result ? 1 : 0;
+    """, w.canvasId.cstring) != 0
+
+method `fullscreen=`*(w: EmscriptenWindow, v: bool) =
+    let isFullscreen = w.fullscreen
+
+    if not isFullscreen and v:
+        discard EM_ASM_INT("""
+            var c = document.getElementById(UTF8ToString($0));
+            if (c.requestFullscreen) {
+                c.requestFullscreen();
+            } else if (c.webkitRequestFullscreen) {
+                c.webkitRequestFullscreen();
+            } else if (c.mozRequestFullScreen) {
+                c.mozRequestFullScreen();
+            } else if (c.msRequestFullscreen) {
+                c.msRequestFullscreen();
+            }
+        """, w.canvasId.cstring)
+    elif isFullscreen and not v:
+        discard EM_ASM_INT("""
+            if (document.exitFullscreen) {
+                document.exitFullscreen();
+            } else if (document.webkitExitFullscreen) {
+                document.webkitExitFullscreen();
+            } else if (document.mozCancelFullScreen) {
+                document.mozCancelFullScreen();
+            } else if (document.msExitFullscreen) {
+                document.msExitFullscreen();
+            }
+        """)
+
+method animationStateChanged*(w: EmscriptenWindow, flag: bool) =
     discard
 
 proc getCanvasDimensions(id: cstring, cssRect: var Rect, virtualSize: var Size) {.inline.} =
     discard EM_ASM_INT("""
-        var c = document.getElementById(Pointer_stringify($0));
+        var c = document.getElementById(UTF8ToString($0));
         var r = c.getBoundingClientRect();
         setValue($1, r.left, 'float');
         setValue($1 + 4, r.top, 'float');
@@ -26,17 +88,19 @@ proc getCanvasDimensions(id: cstring, cssRect: var Rect, virtualSize: var Size) 
         setValue($2 + 4, c.height, 'float');
         """, id, addr cssRect, addr virtualSize)
 
-proc eventLocationFromJSEvent(mouseEvent: ptr EmscriptenMouseEvent, w: EmscriptenWindow, eventTargetIsCanvas: bool): Point =
-    # `eventTargetIsCanvas` should be true if `mouseEvent.targetX` and `mouseEvent.targetY`
-    # are relative to canvas.
+proc eventLocationFromJSEventCoords(x, y: Coord, w: EmscriptenWindow, eventTargetIsCanvas: bool): Point =
+    result = newPoint(x, y)
     var cssRect: Rect
     var virtualSize: Size
     getCanvasDimensions(w.canvasId, cssRect, virtualSize)
-    result.x = Coord(mouseEvent.targetX)
-    result.y = Coord(mouseEvent.targetY)
     if not eventTargetIsCanvas: result -= cssRect.origin
     result.x = result.x / cssRect.width * virtualSize.width / w.pixelRatio
     result.y = result.y / cssRect.height * virtualSize.height / w.pixelRatio
+
+proc eventLocationFromJSEvent(evt: ptr EmscriptenMouseEvent | EmscriptenTouchPoint, w: EmscriptenWindow, eventTargetIsCanvas: bool): Point =
+    # `eventTargetIsCanvas` should be true if `mouseEvent.targetX` and `mouseEvent.targetY`
+    # are relative to canvas.
+    eventLocationFromJSEventCoords(evt.targetX.Coord, evt.targetY.Coord, w, eventTargetIsCanvas)
 
 proc onMouseButton(eventType: cint, mouseEvent: ptr EmscriptenMouseEvent, userData: pointer, bs: ButtonState): EM_BOOL =
     let w = cast[EmscriptenWindow](userData)
@@ -52,6 +116,19 @@ proc onMouseButton(eventType: cint, mouseEvent: ptr EmscriptenMouseEvent, userDa
     evt.window = w
     if mainApplication().handleEvent(evt): result = 1
 
+proc onTouchEvent(touchEvent: ptr EmscriptenTouchEvent, state: ButtonState, userData: pointer) =
+    let w = cast[EmscriptenWindow](userData)
+    let ts = uint32(epochTime() * 1000)
+    for i in 0 ..< touchEvent.numTouches:
+        if touchEvent.touches[i].isChanged == 0:
+            continue
+
+        let point = eventLocationFromJSEvent(touchEvent.touches[i], w, false)
+        var evt = newTouchEvent(point, state, touchEvent.touches[i].identifier, ts)
+        evt.window = w
+
+        discard mainApplication().handleEvent(evt)
+
 proc onMouseDown(eventType: cint, mouseEvent: ptr EmscriptenMouseEvent, userData: pointer): EM_BOOL {.cdecl.} =
     result = onMouseButton(eventType, mouseEvent, userData, bsDown)
     # Preventing default behavior for mousedown may prevent our iframe to become
@@ -59,8 +136,18 @@ proc onMouseDown(eventType: cint, mouseEvent: ptr EmscriptenMouseEvent, userData
     # inability to handle keyboard events.
     result = 0
 
+proc onTouchStart(eventType: cint, touchEvent: ptr EmscriptenTouchEvent, userData: pointer): EM_BOOL {.cdecl.} =
+    touchEvent.onTouchEvent(bsDown, userData)
+    # Treat Document Level Touch Event Listeners as Passive https://www.chromestatus.com/features/5093566007214080
+    result = 0
+
 proc onMouseUp(eventType: cint, mouseEvent: ptr EmscriptenMouseEvent, userData: pointer): EM_BOOL {.cdecl.} =
     onMouseButton(eventType, mouseEvent, userData, bsUp)
+
+proc onTouchEnd(eventType: cint, touchEvent: ptr EmscriptenTouchEvent, userData: pointer): EM_BOOL {.cdecl.} =
+    touchEvent.onTouchEvent(bsUp, userData)
+    # Treat Document Level Touch Event Listeners as Passive https://www.chromestatus.com/features/5093566007214080
+    result = 0
 
 proc onMouseMove(eventType: cint, mouseEvent: ptr EmscriptenMouseEvent, userData: pointer): EM_BOOL {.cdecl.} =
     let w = cast[EmscriptenWindow](userData)
@@ -68,6 +155,11 @@ proc onMouseMove(eventType: cint, mouseEvent: ptr EmscriptenMouseEvent, userData
     var evt = newMouseMoveEvent(point, uint32(mouseEvent.timestamp))
     evt.window = w
     if mainApplication().handleEvent(evt): result = 1
+
+proc onTouchMove(eventType: cint, touchEvent: ptr EmscriptenTouchEvent, userData: pointer): EM_BOOL {.cdecl.} =
+    touchEvent.onTouchEvent(bsUnknown, userData)
+    # Treat Document Level Touch Event Listeners as Passive https://www.chromestatus.com/features/5093566007214080
+    result = 0
 
 proc onMouseWheel(eventType: cint, wheelEvent: ptr EmscriptenWheelEvent, userData: pointer): EM_BOOL {.cdecl.} =
     let w = cast[EmscriptenWindow](userData)
@@ -118,36 +210,40 @@ template getDocumentSize(width, height: var float32) =
 
 template setElementWidthHeight(elementName: cstring, w, h: float32) =
     discard EM_ASM_INT("""
-    var c = document.getElementById(Pointer_stringify($0));
+    var c = document.getElementById(UTF8ToString($0));
     c.width = $1;
     c.height = $2;
     """, cstring(elementName), float32(w), float32(h))
 
 proc updateCanvasSize(w: EmscriptenWindow) =
-    let aspectRatio = w.bounds.width / w.bounds.height
+    w.pixelRatio = screenScaleFactor()
 
-    const maxWidth = 1920
-    const maxHeight = 1080
+    let aspectRatio = w.bounds.width / w.bounds.height
 
     var width, height: float32
     getDocumentSize(width, height)
 
-    let screenAspect = width / height
+    when not defined(disableEmscriptenFixedRatio):
+        const maxWidth = 1920
+        const maxHeight = 1080
 
-    var scaleFactor: Coord
-    if (screenAspect > aspectRatio):
-        scaleFactor = height / maxHeight
+        let screenAspect = width / height
+
+        var scaleFactor: Coord
+        if (screenAspect > aspectRatio):
+            scaleFactor = height / maxHeight
+        else:
+            scaleFactor = width / maxWidth
+
+        width = maxWidth * scaleFactor
+        height = maxHeight * scaleFactor
+
+        if scaleFactor > 1: scaleFactor = 1
+        let canvWidth = maxWidth * scaleFactor
+        let canvHeight = maxHeight * scaleFactor
     else:
-        scaleFactor = width / maxWidth
-
-    width = maxWidth * scaleFactor
-    height = maxHeight * scaleFactor
-
-    w.pixelRatio = screenScaleFactor()
-
-    if scaleFactor > 1: scaleFactor = 1
-    let canvWidth = maxWidth * scaleFactor
-    let canvHeight = maxHeight * scaleFactor
+        let canvWidth = width
+        let canvHeight = height
 
     setElementWidthHeight(w.canvasId, w.pixelRatio * canvWidth, w.pixelRatio * canvHeight)
 
@@ -161,8 +257,9 @@ proc onResize(eventType: cint, uiEvent: ptr EmscriptenUiEvent, userData: pointer
     result = 0
 
 proc onContextLost(eventType: cint, reserved: pointer, userData: pointer): EM_BOOL {.cdecl.} =
+    error "WebGL context lost"
     discard EM_ASM_INT("""
-    alert("Context lost!");
+    alert("WebGL context lost! Please try to restart or upgrade your browser.");
     """)
 
 proc initCommon(w: EmscriptenWindow, r: view.Rect) =
@@ -179,6 +276,13 @@ proc initCommon(w: EmscriptenWindow, r: view.Rect) =
         if (window.__nimx_textinput && window.__nimx_textinput.oninput)
             window.__nimx_textinput.focus();
     };
+
+    canvas.ontouchstart =
+    canvas.oncontextmenu = function(e) {
+        e.preventDefault();
+        return false;
+    };
+
     canvas.id = "nimx_canvas" + window.__nimx_canvas_id;
     canvas.width = $0;
     canvas.height = $1;
@@ -195,6 +299,8 @@ proc initCommon(w: EmscriptenWindow, r: view.Rect) =
     attrs.antialias = 0
     attrs.stencil = 1
     w.ctx = emscripten_webgl_create_context(w.canvasId, addr attrs)
+    if w.ctx <= 0:
+        raise newException(Exception, "Could not create WebGL context: " & $w.ctx)
     discard emscripten_webgl_make_context_current(w.ctx)
     w.renderingContext = newGraphicsContext()
 
@@ -204,6 +310,11 @@ proc initCommon(w: EmscriptenWindow, r: view.Rect) =
     discard emscripten_set_mousemove_callback(docID, cast[pointer](w), 0, onMouseMove)
     discard emscripten_set_wheel_callback(w.canvasId, cast[pointer](w), 0, onMouseWheel)
 
+    discard emscripten_set_touchstart_callback(docID, cast[pointer](w), 0, onTouchStart)
+    discard emscripten_set_touchmove_callback(docID, cast[pointer](w), 0, onTouchMove)
+    discard emscripten_set_touchend_callback(docID, cast[pointer](w), 0, onTouchEnd)
+    discard emscripten_set_touchcancel_callback(docID, cast[pointer](w), 0, onTouchEnd)
+
     discard emscripten_set_keydown_callback(docID, cast[pointer](w), 1, onKeyDown)
     discard emscripten_set_keyup_callback(docID, cast[pointer](w), 1, onKeyUp)
 
@@ -211,6 +322,8 @@ proc initCommon(w: EmscriptenWindow, r: view.Rect) =
     discard emscripten_set_focus_callback(nil, cast[pointer](w), 1, onFocus)
 
     discard emscripten_set_webglcontextlost_callback(w.canvasId, cast[pointer](w), 0, onContextLost)
+
+    discard emscripten_set_fullscreenchange_callback(docId, cast[pointer](w), 0, onFullscreenChange)
 
     discard emscripten_set_resize_callback(nil, cast[pointer](w), 0, onResize)
 
@@ -288,7 +401,7 @@ method stopTextInput*(w: EmscriptenWindow) =
 var lastFullCollectTime = 0.0
 const fullCollectThreshold = 128 * 1024 * 1024 # 128 Megabytes
 
-proc nimxMainLoopInner() {.EMSCRIPTEN_KEEPALIVE.} =
+proc nimxMainLoopInner() =
     mainApplication().runAnimations()
     mainApplication().drawWindows()
 
@@ -312,18 +425,7 @@ var initFunc : proc()
 var initDone = false
 proc mainLoopPreload() {.cdecl.} =
     if initDone:
-        when defined(release):
-            handleJSExceptions:
-                nimxMainLoopInner()
-        else:
-            discard EM_ASM_INT """
-            try {
-                _nimxMainLoopInner();
-            }
-            catch(e) {
-                _nimem_e(e);
-            }
-            """
+        nimxMainLoopInner()
     else:
         let r = EM_ASM_INT """
         return (document.readyState === 'complete') ? 1 : 0;
@@ -334,7 +436,7 @@ proc mainLoopPreload() {.cdecl.} =
             initFunc = nil
             initDone = true
 
-template runApplication*(initCode: typed): stmt =
+template runApplication*(initCode: typed) =
     initFunc = proc() =
         initCode
     emscripten_set_main_loop(mainLoopPreload, 0, 1)

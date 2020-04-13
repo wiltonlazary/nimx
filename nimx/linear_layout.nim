@@ -1,6 +1,4 @@
-import nimx.view, nimx.event, nimx.cursor, nimx.view_event_handling_new
-import view_dragging_listener
-
+import nimx / [ view, cursor, view_event_handling, view_dragging_listener ]
 export view
 
 type
@@ -195,6 +193,7 @@ proc setDividerPosition*(v: LinearLayout, pos: Coord, i: int) =
         s2.setFrame(f2)
 
 proc dividerPositions*(v: LinearLayout): seq[Coord] =
+    if v.subviews.len == 0: return @[]
     let ln = v.subviews.len - 1
     result = newSeq[Coord](ln)
     for i in 0 ..< ln:
@@ -245,7 +244,7 @@ method onInterceptTouchEv*(v: LinearLayout, e: var Event): bool =
     if v.mUserResizeable and v.hoveredDivider != -1:
         result = true
 
-method replaceSubview*(v: LinearLayout, s, withView: View) =
+method replaceSubview*(v: LinearLayout, subviewIndex: int, withView: View) =
     let pos = v.dividerPositions
-    procCall v.View.replaceSubview(s, withView)
+    procCall v.View.replaceSubview(subviewIndex, withView)
     v.dividerPositions = pos

@@ -1,4 +1,4 @@
-import ospaths, os
+import os
 import abstract_asset_bundle
 
 type NativeAssetBundle* = ref object of AssetBundle
@@ -6,12 +6,12 @@ type NativeAssetBundle* = ref object of AssetBundle
 
 proc newNativeAssetBundle*(): NativeAssetBundle =
     result.new()
-    when defined(macosx):
-        result.mBaseUrl = "file://" & getAppDir() /../ "Resources"
-    elif defined(ios):
+    when defined(ios):
         result.mBaseUrl = "file://" & getAppDir()
+    elif defined(macosx):
+        result.mBaseUrl = "file://" & getAppDir() & "/../Resources"
     else:
-        result.mBaseUrl = "file://" & getAppDir() / "res"
+        result.mBaseUrl = "file://" & getAppDir() & "/res"
 
 method urlForPath*(ab: NativeAssetBundle, path: string): string =
-    return ab.mBaseUrl / path
+    return ab.mBaseUrl & "/" & path

@@ -1,17 +1,7 @@
-import control
-import context
-import image
-import types
-import system_logger
-import event
-import font
-import app
+import control, context, image, types, event, font, composition
 import view_event_handling
-import view_event_handling_new
-import composition
-import property_visitor
-import serializers
-import resource
+
+import property_visitor, serializers
 
 export control
 
@@ -21,26 +11,30 @@ type ButtonStyle* = enum
     bsRegular
     bsCheckbox
     bsRadiobox
-    bsImage
-    bsNinePartImage
+    bsImage {.deprecated.}
+    bsNinePartImage {.deprecated.}
 
 type ButtonBehavior* = enum
     bbMomentaryLight
     bbToggle
 
-type Button* = ref object of Control
-    title*: string
-    image*: Image
-    imageMarginLeft*: Coord
-    imageMarginRight*: Coord
-    imageMarginTop*: Coord
-    imageMarginBottom*: Coord
-    state*: ButtonState
-    value*: int8
-    enabled*: bool
-    hasBezel*: bool
-    style*: ButtonStyle
-    behavior*: ButtonBehavior
+type
+    Button* = ref object of Control
+        title*: string
+        image*: Image
+        imageMarginLeft*: Coord
+        imageMarginRight*: Coord
+        imageMarginTop*: Coord
+        imageMarginBottom*: Coord
+        state*: ButtonState
+        value*: int8
+        enabled*: bool
+        hasBezel*: bool
+        style*: ButtonStyle
+        behavior*: ButtonBehavior
+
+    Checkbox* = ref object of Button
+    Radiobox* = ref object of Button
 
 proc newButton*(r: Rect): Button =
     result.new()
@@ -72,7 +66,7 @@ proc newImageButton*(parent: View = nil, position: Point = newPoint(0, 0), size:
     if not isNil(parent):
         parent.addSubview(result)
 
-method init(b: Button, frame: Rect) =
+method init*(b: Button, frame: Rect) =
     procCall b.Control.init(frame)
     b.state = bsUp
     b.enabled = true
@@ -83,8 +77,18 @@ method init(b: Button, frame: Rect) =
     b.imageMarginTop = 2
     b.imageMarginBottom = 2
 
+method init*(b: Checkbox, frame: Rect) =
+    procCall b.Button.init(frame)
+    b.style = bsCheckbox
+    b.behavior = bbToggle
+
+method init*(b: Radiobox, frame: Rect) =
+    procCall b.Button.init(frame)
+    b.style = bsRadiobox
+    b.behavior = bbToggle
+
 proc drawTitle(b: Button, xOffset: Coord) =
-    if b.title != nil:
+    if b.title.len != 0:
         let c = currentContext()
         c.fillColor = if b.state == bsDown and b.style == bsRegular:
                 whiteColor()
@@ -113,20 +117,18 @@ void compose() {
 }
 """
 
-proc drawRegularStyle(b: Button, r: Rect) {.inline.} =
-    if b.hasBezel:
-        regularButtonComposition.draw r:
-            if b.state == bsUp:
-                setUniform("uStrokeColor", newGrayColor(0.78))
-                setUniform("uFillColorStart", if b.enabled: b.backgroundColor else: grayColor())
-                setUniform("uFillColorEnd", if b.enabled: b.backgroundColor else: grayColor())
-                setUniform("uShadowOffset", -0.5'f32)
-            else:
-                setUniform("uStrokeColor", newColor(0.18, 0.50, 0.98))
-                setUniform("uFillColorStart", newColor(0.31, 0.60, 0.98))
-                setUniform("uFillColorEnd", newColor(0.09, 0.42, 0.88))
-                setUniform("uShadowOffset", 0.0'f32)
-    b.drawTitle(0)
+proc drawRegularBezel(b: Button) =
+    regularButtonComposition.draw b.bounds:
+        if b.state == bsUp:
+            setUniform("uStrokeColor", newGrayColor(0.78))
+            setUniform("uFillColorStart", if b.enabled: b.backgroundColor else: grayColor())
+            setUniform("uFillColorEnd", if b.enabled: b.backgroundColor else: grayColor())
+            setUniform("uShadowOffset", -0.5'f32)
+        else:
+            setUniform("uStrokeColor", newColor(0.18, 0.50, 0.98))
+            setUniform("uFillColorStart", newColor(0.31, 0.60, 0.98))
+            setUniform("uFillColorEnd", newColor(0.09, 0.42, 0.88))
+            setUniform("uShadowOffset", 0.0'f32)
 
 var checkButtonComposition = newComposition """
 uniform vec4 uStrokeColor;
@@ -205,26 +207,15 @@ proc drawRadioboxStyle(b: Button, r: Rect) =
 
     b.drawTitle(bezelRect.width + 1)
 
-proc drawImageStyle(b: Button, r: Rect) =
-    if b.hasBezel:
-        regularButtonComposition.draw r:
-            if b.state == bsUp:
-                setUniform("uStrokeColor", newGrayColor(0.78))
-                setUniform("uFillColorStart", if b.enabled: b.backgroundColor else: grayColor())
-                setUniform("uFillColorEnd", if b.enabled: b.backgroundColor else: grayColor())
-            else:
-                setUniform("uStrokeColor", newColor(0.18, 0.50, 0.98))
-                setUniform("uFillColorStart", newColor(0.31, 0.60, 0.98))
-                setUniform("uFillColorEnd", newColor(0.09, 0.42, 0.88))
-
-    if not b.image.isNil:
-        let c = currentContext()
+proc drawImage(b: Button) =
+    let c = currentContext()
+    let r = b.bounds
+    if b.imageMarginLeft != 0 or b.imageMarginRight != 0 or
+            b.imageMarginTop != 0 or b.imageMarginBottom != 0:
+        c.drawNinePartImage(b.image, b.bounds, b.imageMarginLeft, b.imageMarginTop, b.imageMarginRight, b.imageMarginBottom)
+    else:
         c.drawImage(b.image, newRect(r.x + b.imageMarginLeft, r.y + b.imageMarginTop,
             r.width - b.imageMarginLeft - b.imageMarginRight, r.height - b.imageMarginTop - b.imageMarginBottom))
-
-proc drawNinePartImageStyle(b: Button, r: Rect) =
-    let c = currentContext()
-    c.drawNinePartImage(b.image, b.bounds, b.imageMarginLeft, b.imageMarginTop, b.imageMarginRight, b.imageMarginBottom)
 
 method draw(b: Button, r: Rect) =
     case b.style
@@ -232,12 +223,12 @@ method draw(b: Button, r: Rect) =
         b.drawRadioboxStyle(r)
     of bsCheckbox:
         b.drawCheckboxStyle(r)
-    of bsImage:
-        b.drawImageStyle(r)
-    of bsNinePartImage:
-        b.drawNinePartImageStyle(r)
     else:
-        b.drawRegularStyle(r)
+        if not b.image.isNil:
+            b.drawImage()
+        elif b.hasBezel:
+            b.drawRegularBezel()
+        b.drawTitle(0)
 
 proc setState*(b: Button, s: ButtonState) =
     if b.state != s:
@@ -328,7 +319,7 @@ method serializeFields*(v: Button, s: Serializer) =
     s.serialize("enabled", v.enabled)
     s.serialize("hasBezel", v.hasBezel)
     s.serialize("behavior", v.behavior)
-    let imagePath = if v.image.isNil: nil else: v.image.filePath
+    let imagePath = if v.image.isNil: "" else: v.image.filePath
     s.serialize("image", imagePath)
     s.serialize("marginLeft", v.imageMarginLeft)
     s.serialize("marginRight", v.imageMarginRight)
@@ -346,7 +337,7 @@ method deserializeFields*(v: Button, s: Deserializer) =
     s.deserialize("behavior", v.behavior)
     var imgName : string
     s.deserialize("image", imgName)
-    if not imgName.isNil:
+    if imgName.len != 0:
         v.image = imageWithResource(imgName)
     s.deserialize("marginLeft", v.imageMarginLeft)
     s.deserialize("marginRight", v.imageMarginRight)

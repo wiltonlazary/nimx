@@ -1,13 +1,6 @@
+import strutils
 import sample_registry
-
-import nimx.collection_view
-import nimx.image
-import nimx.popup_button
-import nimx.slider
-import nimx.text_field
-import nimx.timer
-import nimx.types
-import nimx.view
+import nimx / [ collection_view, popup_button, slider, text_field, timer, view ]
 
 type CollectionsSampleView = ref object of View
 
@@ -35,17 +28,31 @@ method init(v: CollectionsSampleView, r: Rect) =
         let popupDirectionRule = newPopupButton(v, newPoint(470, 20), newSize(100, 20), ["LeftToRight", "TopDown"])
         popupDirectionRule.onAction do():
             collectionView.layoutDirection = popupDirectionRule.selectedIndex().LayoutDirection
+            collectionView.updateLayout()
 
         discard newLabel(v, newPoint(470, 45), newSize(100, 10), "Layout width:")
 
         let popupLayoutWidth = newPopupButton(v, newPoint(470, 60), newSize(100, 20), ["Auto", "1", "2", "3", "4"])
         popupLayoutWidth.onAction do():
             collectionView.layoutWidth = popupLayoutWidth.selectedIndex()
+            collectionView.updateLayout()
 
         discard newLabel(v, newPoint(470, 85), newSize(100, 10), "Item size:")
 
         let popupItemSize = newPopupButton(v, newPoint(470, 100), newSize(100, 20), ["50", "100", "150"])
         popupItemSize.onAction do():
             collectionView.itemSize = newSize((50 + 50 * popupItemSize.selectedIndex()).Coord, (50 + 50 * popupItemSize.selectedIndex()).Coord)
+            collectionView.updateLayout()
+
+        discard newLabel(v, newPoint(470, 125), newSize(100, 10), "Offset:")
+
+        let offsetField = newTextField(newRect(newPoint(470, 140), newSize(100, 20)))
+        offsetField.continuous = true
+        offsetField.onAction do():
+            var offset = try: parseFloat(offsetField.text) except: 0.0
+            collectionView.offset = offset
+            collectionView.updateLayout()
+        v.addSubview(offsetField)
+
 
 registerSample(CollectionsSampleView, "Collections")

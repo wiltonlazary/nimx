@@ -3,10 +3,9 @@ const appKit = defined(macosx) and not defined(ios)
 when defined(js) or defined(emscripten):
     import jsbind
     when defined(emscripten):
-        import jsbind.emscripten
+        import jsbind/emscripten
 elif appKit:
-    import private.objc_appkit
-    enableObjC()
+    import darwin/app_kit as apkt
 else:
     import sdl2
 
@@ -111,7 +110,7 @@ proc setCurrent*(c: Cursor) =
         """.}
     elif defined(emscripten):
         discard EM_ASM_INT("""
-        document.body.style.cursor = Pointer_stringify($0);
+        document.body.style.cursor = UTF8ToString($0);
         """, cstring(c.c))
     elif appKit:
         cast[NSCursor](c.c).setCurrent()

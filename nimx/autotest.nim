@@ -12,7 +12,7 @@ type UITestSuite* = ref object
 
 when defined(js) or defined(emscripten):
     when defined(emscripten):
-        import jsbind.emscripten
+        import jsbind/emscripten
 
     # When testing on Firefox, we have to use window.dump instead of console.log
     type FirefoxAutotestLogger = ref object of Logger
@@ -26,7 +26,7 @@ when defined(js) or defined(emscripten):
             """.}
         else:
             discard EM_ASM_INT("""
-            window['dump'](Pointer_stringify($0) + '\n');
+            window['dump'](UTF8ToString($0) + '\n');
             """, a)
 
     var loggerSetupDone = false
@@ -64,10 +64,7 @@ proc makeStep(code: proc(), astrepr, lineinfo: string): UITestSuiteStep {.inline
     result.lineinfo = lineinfo
 
 proc registerTest*(ts: UITestSuite) =
-    if registeredTests.isNil:
-        registeredTests = @[ts]
-    else:
-        registeredTests.add(ts)
+    registeredTests.add(ts)
 
 proc registeredTest*(name: string): UITestSuite =
     for t in registeredTests:
@@ -92,7 +89,7 @@ proc testSuiteDefinitionWithNameAndBody(name, body: NimNode): NimNode =
 macro uiTest*(name: untyped, body: typed): untyped =
     result = testSuiteDefinitionWithNameAndBody(name, body)
 
-macro registeredUiTest*(name: untyped, body: typed): typed =
+macro registeredUiTest*(name: untyped, body: typed): untyped =
     result = newStmtList()
     result.add(testSuiteDefinitionWithNameAndBody(name, body))
     result.add(newCall(bindSym"registerTest", name))
@@ -160,6 +157,44 @@ when false:
 
     registerTest(myTest)
 
+when defined(js) or defined(emscripten):
+    import nimx/pathutils
+elif defined(android):
+    import jnim
+    import android/app/activity, android/content/intent, android/os/base_bundle
+else:
+    import os
+
+proc getAllTestNames(): seq[string] =
+    result = newSeq[string](registeredTests.len)
+    for i, t in registeredTests: result[i] = t.name
+
+proc getTestsToRun*(): seq[string] =
+    when defined(js) or defined(emscripten):
+        let testsStr = getCurrentHref().uriParam("nimxAutoTest")
+        if testsStr.len != 0:
+            result = testsStr.split(',')
+    elif defined(android):
+        let act = currentActivity()
+        assert(not act.isNil)
+        let extras = act.getIntent().getExtras()
+        if not extras.isNil:
+            let r = extras.getString("nimxAutoTest")
+            if r.len != 0:
+                result = r.split(',')
+    else:
+        var i = 0
+        while i < paramCount():
+            if paramStr(i) == "--nimxAutoTest":
+                inc i
+                result.add(paramStr(i).split(','))
+            inc i
+    if "all" in result:
+        result = getAllTestNames()
+
+proc haveTestsToRun*(): bool =
+    getTestsToRun().len != 0
+
 proc startTest*(t: UITestSuite, onComplete: proc() = nil) =
     when defined(js) or defined(emscripten): setupLogger()
     testRunnerContext.new()
@@ -176,12 +211,30 @@ proc startTest*(t: UITestSuite, onComplete: proc() = nil) =
             testRunnerContext = nil
             if not onComplete.isNil: onComplete()
 
-proc startRegisteredTests*(onComplete: proc() = nil) =
+proc testWithName(name: string): UITestSuite =
+    for t in registeredTests:
+        if t.name == name: return t
+
+proc startTests(tests: seq[UITestSuite], onComplete: proc()) =
     var curTestSuite = 0
     proc startNextSuite() =
-        if curTestSuite < registeredTests.len:
-            startTest(registeredTests[curTestSuite], startNextSuite)
+        if curTestSuite < tests.len:
+            startTest(tests[curTestSuite], startNextSuite)
             inc curTestSuite
         elif not onComplete.isNil:
             onComplete()
     startNextSuite()
+
+proc startRequestedTests*(onComplete: proc() = nil) =
+    let testsToRun = getTestsToRun()
+    var tests = newSeq[UITestSuite](testsToRun.len)
+    for i, n in testsToRun:
+        let t = testWithName(n)
+        if t.isNil:
+            raise newException(Exception, "Test " & n & " not registered")
+        tests[i] = t
+
+    startTests(tests, onComplete)
+
+proc startRegisteredTests*(onComplete: proc() = nil) {.inline.} =
+    startTests(registeredTests, onComplete)

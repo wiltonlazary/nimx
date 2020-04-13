@@ -53,14 +53,15 @@ when defined js:
             ALPHA*, LUMINANCE* : GLenum
             UNSIGNED_BYTE* : GLenum
             COLOR_ATTACHMENT0* : GLenum
-            DEPTH_ATTACHMENT* : GLenum
-            DEPTH_STENCIL_ATTACHMENT* : GLenum
-            DEPTH_COMPONENT16* : GLenum
+            DEPTH_ATTACHMENT*, STENCIL_ATTACHMENT*, DEPTH_STENCIL_ATTACHMENT* : GLenum
+            DEPTH_COMPONENT16*, STENCIL_INDEX8* : GLenum
             DEPTH_STENCIL* : GLenum
             DEPTH24_STENCIL8* : GLenum
             FRAMEBUFFER_BINDING : GLenum
             RENDERBUFFER_BINDING : GLenum
+            BLEND_SRC_RGB*, BLEND_SRC_ALPHA*, BLEND_DST_RGB*, BLEND_DST_ALPHA*: GLenum
             STENCIL_TEST*, DEPTH_TEST*, SCISSOR_TEST* : GLenum
+            MAX_TEXTURE_SIZE*: GLenum
             NEVER*, LESS*, LEQUAL*, GREATER*, GEQUAL*, EQUAL*, NOTEQUAL*, ALWAYS*: GLenum
             KEEP*, ZERO*, REPLACE*, INCR*, INCR_WRAP*, DECR*, DECR_WRAP*, INVERT*: GLenum
 
@@ -231,8 +232,10 @@ else:
     template UNSIGNED_BYTE*(gl: GL): GLenum = GL_UNSIGNED_BYTE
     template COLOR_ATTACHMENT0*(gl: GL): GLenum = GL_COLOR_ATTACHMENT0
     template DEPTH_ATTACHMENT*(gl: GL): GLenum = GL_DEPTH_ATTACHMENT
+    template STENCIL_ATTACHMENT*(gl: GL): GLenum = GL_STENCIL_ATTACHMENT
     template DEPTH_STENCIL_ATTACHMENT*(gl: GL): GLenum = GL_DEPTH_STENCIL_ATTACHMENT
     template DEPTH_COMPONENT16*(gl: GL): GLenum = GL_DEPTH_COMPONENT16
+    template STENCIL_INDEX8*(gl: GL): GLenum = GL_STENCIL_INDEX8
     template DEPTH_STENCIL*(gl: GL): GLenum = GL_DEPTH_STENCIL
     template DEPTH24_STENCIL8*(gl: GL): GLenum = GL_DEPTH24_STENCIL8
     #template FRAMEBUFFER_BINDING(gl: GL): GLenum = GL_FRAMEBUFFER_BINDING
@@ -240,7 +243,11 @@ else:
     template STENCIL_TEST*(gl: GL): GLenum = GL_STENCIL_TEST
     template DEPTH_TEST*(gl: GL): GLenum = GL_DEPTH_TEST
     template SCISSOR_TEST*(gl: GL): GLenum = GL_SCISSOR_TEST
-
+    template MAX_TEXTURE_SIZE*(gl: GL): GLenum = GL_MAX_TEXTURE_SIZE
+    template BLEND_SRC_RGB*(gl: GL): GLenum = GL_BLEND_SRC_RGB
+    template BLEND_SRC_ALPHA*(gl: GL): GLenum = GL_BLEND_SRC_ALPHA
+    template BLEND_DST_RGB*(gl: GL): GLenum = GL_BLEND_DST_RGB
+    template BLEND_DST_ALPHA*(gl: GL): GLenum = GL_BLEND_DST_ALPHA
     template NEVER*(gl: GL): GLenum = GL_NEVER
     template LESS*(gl: GL): GLenum = GL_LESS
     template LEQUAL*(gl: GL): GLenum = GL_LEQUAL

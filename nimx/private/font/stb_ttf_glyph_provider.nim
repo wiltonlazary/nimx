@@ -1,8 +1,8 @@
-import strutils, streams
-import nimx.resource, nimx.private.font.font_data, nimx.rect_packer
-
+import strutils, streams, logging
+import nimx/private/font/font_data
+import nimx/assets/url_stream
+import rect_packer
 import ttf
-import logging
 
 type StbTtfGlyphProvider* = ref object
     path: string
@@ -18,11 +18,15 @@ template setSize*(p: StbTtfGlyphProvider, sz: float32) =
     p.size = sz
 
 proc loadFontData(p: StbTtfGlyphProvider) =
-    if not p.fontData.isNil: return
+    if p.fontData.len != 0: return
     if p.path.startsWith("res://"):
-        let fstr = streamForResourceWithPath(p.path.substr("res://".len))
-        p.fontData = fstr.readAll()
-        fstr.close()
+        var s: Stream
+        openStreamForUrl(p.path) do(st: Stream, err: string):
+            s = st
+        if not s.isNil:
+            error "Could not load font from path: ", p.path
+        p.fontData = s.readAll()
+        s.close()
     else:
         p.fontData = readFile(p.path)
 
@@ -31,7 +35,7 @@ proc loadFontData(p: StbTtfGlyphProvider) =
         raise newException(Exception, "Could not init font")
 
 proc clearCache*(p: StbTtfGlyphProvider) =
-    p.fontData = nil
+    p.fontData = ""
 
 proc getFontMetrics*(p: StbTtfGlyphProvider, oAscent, oDescent: var float32) =
     p.loadFontData()
@@ -59,7 +63,7 @@ proc bakeChars*(p: StbTtfGlyphProvider, start: int32, data: var GlyphData) =
 
     var glyphIndexes: array[charChunkLength, cint]
 
-    for i in startChar .. < endChar:
+    for i in startChar ..< endChar:
         if isPrintableCodePoint(i):
             let g = stbtt_FindGlyphIndex(p.fontInfo, i) # g > 0 when found
             glyphIndexes[i - startChar] = g
@@ -85,7 +89,7 @@ proc bakeChars*(p: StbTtfGlyphProvider, start: int32, data: var GlyphData) =
     data.bitmapHeight = height.uint16
     var temp_bitmap = newSeq[byte](width * height)
 
-    for i in startChar .. < endChar:
+    for i in startChar ..< endChar:
         let indexOfGlyphInRange = i - startChar
         data.dfDoneForGlyph[indexOfGlyphInRange] = true
         if isPrintableCodePoint(i):

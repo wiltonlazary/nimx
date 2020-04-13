@@ -1,14 +1,7 @@
-import math
-
-import nimx.font
-import nimx.image
-import nimx.button
-import nimx.view
-import nimx.event
-import nimx.view_event_handling_new
-import nimx.context
-import nimx.types
-import nimx.color
+import nimx/[button, view, types, color]
+import nimx/view
+import nimx/types
+import nimx/color
 
 
 type StackView* = ref object of View
@@ -45,6 +38,7 @@ method subviewDidChangeDesiredSize*(v: StackView, sub: View, desiredSize: Size) 
 
 method didAddSubview*(v: StackView, subView: View) =
     v.recalculateContent()
+    v.subviewDidChangeDesiredSize(nil, v.frame().size)
 
 proc popupAtPoint*(ip: StackView, v: View, p: Point) =
     ip.removeFromSuperview()

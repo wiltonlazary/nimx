@@ -1,14 +1,15 @@
-import typetraits, tables, sequtils
-import types
-import context
-import animation
-import animation_runner
+import typetraits, tables
+import types, context, animation_runner, layout_vars
 import property_visitor
 import class_registry
 import serializers
+import kiwi
+import notification_center
 
 export types
 export animation_runner, class_registry
+
+const NimxFristResponderChangedInWindow* = "NimxFristResponderChangedInWindow"
 
 type AutoresizingFlag* = enum
     afFlexibleMinX
@@ -25,7 +26,17 @@ type ClipType* = enum
 type
     GestureDetector* = ref object of RootObj
 
-    View* = ref object of RootObj
+    DragDestinationDelegate* = ref object of RootObj
+
+    ConstraintWithPrototype = object
+        proto: Constraint
+        inst: Constraint
+
+    LayoutInfo = object
+        vars*: LayoutVars
+        constraints: seq[ConstraintWithPrototype]
+
+    View* = ref object of RootRef
         window*: Window
         name*: string
         frame: Rect                 ## view rect in superview coordinate system
@@ -40,21 +51,128 @@ type
         mouseInside*: bool
         handleMouseOver: bool
         hidden*: bool
+        usesNewLayout*: bool
+        dragDestination*: DragDestinationDelegate
+        layout*: LayoutInfo
 
     Window* = ref object of View
         firstResponder*: View       ## handler of untargeted (keyboard and menu) input
         animationRunners*: seq[AnimationRunner]
         needsDisplay*: bool
+        needsLayout*: bool
         mouseOverListeners*: seq[View]
         pixelRatio*: float32
+        viewportPixelRatio*: float32
         mActiveBgColor*: Color
+        layoutSolver*: Solver
+        onClose*: proc()
+        mCurrentTouches*: TableRef[int, View]
+        mAnimationEnabled*: bool
+
+proc init(i: var LayoutInfo) =
+    i.vars.init()
+
+proc replacePlaceholderVar(view: View, indexOfViewInSuper: int, v: var Variable) =
+    var prevView, nextView: View
+    if indexOfViewInSuper != 0:
+        prevView = view.superview.subviews[indexOfViewInSuper - 1]
+    if indexOfViewInSuper < view.superview.subviews.len - 1:
+        nextView = view.superview.subviews[indexOfViewInSuper + 1]
+
+    if system.`==`(v, prevPHS.x):
+        doAssert(not prevView.isNil, "Cannot resolve prev, view is is the first child")
+        v = prevView.layout.vars.x
+    elif system.`==`(v, prevPHS.y):
+        doAssert(not prevView.isNil, "Cannot resolve prev, view is is the first child")
+        v = prevView.layout.vars.y
+    elif system.`==`(v, prevPHS.width):
+        doAssert(not prevView.isNil, "Cannot resolve prev, view is is the first child")
+        v = prevView.layout.vars.width
+    elif system.`==`(v, prevPHS.height):
+        doAssert(not prevView.isNil, "Cannot resolve prev, view is is the first child")
+        v = prevView.layout.vars.height
+    elif system.`==`(v, nextPHS.x):
+        doAssert(not nextView.isNil, "Cannot resolve next, view is is the last child")
+        v = nextView.layout.vars.x
+    elif system.`==`(v, nextPHS.y):
+        doAssert(not nextView.isNil, "Cannot resolve next, view is is the last child")
+        v = nextView.layout.vars.y
+    elif system.`==`(v, nextPHS.width):
+        doAssert(not nextView.isNil, "Cannot resolve next, view is is the last child")
+        v = nextView.layout.vars.width
+    elif system.`==`(v, nextPHS.height):
+        doAssert(not nextView.isNil, "Cannot resolve next, view is is the last child")
+        v = nextView.layout.vars.height
+    elif system.`==`(v, superPHS.x):
+        v = view.superview.layout.vars.x
+    elif system.`==`(v, superPHS.y):
+        v = view.superview.layout.vars.y
+    elif system.`==`(v, superPHS.width):
+        v = view.superview.layout.vars.width
+    elif system.`==`(v, superPHS.height):
+        v = view.superview.layout.vars.height
+    elif system.`==`(v, selfPHS.x):
+        v = view.layout.vars.x
+    elif system.`==`(v, selfPHS.y):
+        v = view.layout.vars.y
+    elif system.`==`(v, selfPHS.width):
+        v = view.layout.vars.width
+    elif system.`==`(v, selfPHS.height):
+        v = view.layout.vars.height
+
+proc instantiateConstraint(v: View, c: var ConstraintWithPrototype) =
+    # Instantiate constrinat prototype and add it to the window
+    let ic = newConstraint(c.proto.expression, c.proto.op, c.proto.strength)
+    let indexOfViewInSuper = v.superview.subviews.find(v)
+    assert(indexOfViewInSuper != -1)
+    let count = ic.expression.terms.len
+    for i in 0 ..< count:
+        replacePlaceholderVar(v, indexOfViewInSuper, ic.expression.terms[i].variable)
+
+    assert(c.inst.isNil, "Internal error")
+    c.inst = ic
+
+    assert(not v.window.isNil, "Internal error")
+    v.window.layoutSolver.addConstraint(ic)
+
+proc findConstraint(v: View, c: Constraint): int {.inline.} =
+    for i, cc in v.layout.constraints:
+        if cc.proto == c:
+            return i
+    return -1
+
+proc addConstraint*(v: View, c: Constraint) =
+    v.layout.constraints.add(ConstraintWithPrototype(proto: c))
+    if not v.window.isNil:
+        v.instantiateConstraint(v.layout.constraints[^1])
+
+proc addConstraints*(v: View, cc: openarray[Constraint]) =
+    for c in cc: v.addConstraint(c)
+
+proc removeConstraint*(v: View, c: Constraint) =
+    let idx = v.findConstraint(c)
+    assert(idx != -1)
+    let inst = v.layout.constraints[idx].inst
+    v.layout.constraints.del(idx)
+    if not v.window.isNil:
+        assert(not inst.isNil)
+        v.window.layoutSolver.removeConstraint(inst)
+
+proc removeConstraints*(v: View, cc: openarray[Constraint]) =
+    for c in cc: v.removeConstraint(c)
+
+proc constraints*(v: View): seq[Constraint] =
+    result = newSeqOfCap[Constraint](v.layout.constraints.len)
+    for c in v.layout.constraints: result.add(c.proto)
 
 method init*(v: View, frame: Rect) {.base.} =
     v.frame = frame
+    v.layout.init()
     v.bounds = newRect(0, 0, frame.width, frame.height)
     v.subviews = @[]
     v.gestureDetectors = @[]
     v.autoresizingMask = { afFlexibleMaxX, afFlexibleMaxY }
+    v.usesNewLayout = frame == zeroRect
 
 proc addMouseOverListener(w: Window, v: View) =
     let i = w.mouseOverListeners.find(v)
@@ -86,11 +204,11 @@ proc removeGestureDetector*(v: View, d: GestureDetector) =
 
 proc removeAllGestureDetectors*(v: View) = v.gestureDetectors.setLen(0)
 
-proc new*[V](v: typedesc[V], frame: Rect): V =
+proc new*[V](v: typedesc[V], frame: Rect): V = # Deprecated
     result.new()
     result.init(frame)
 
-proc newView*(frame: Rect): View =
+proc newView*(frame: Rect): View = # Deprecated
     result.new()
     result.init(frame)
 
@@ -131,6 +249,7 @@ proc makeFirstResponder*(w: Window, responder: View): bool =
     if shouldChange:
         w.firstResponder = r
         r.viewDidBecomeFirstResponder()
+        sharedNotificationCenter().postNotification(NimxFristResponderChangedInWindow, newVariant(r))
         result = true
 
 method makeFirstResponder*(v: View): bool {.base.} =
@@ -149,8 +268,12 @@ method viewWillMoveToWindow*(v: View, w: Window) {.base.} =
         if v.window.firstResponder == v and w != v.window:
             discard v.window.makeFirstResponder(nil)
 
-    if v.handleMouseOver:
-        if not w.isNil:
+        for c in v.layout.constraints.mitems:
+            v.window.layoutSolver.removeConstraint(c.inst)
+            c.inst = nil
+
+    if not w.isNil:
+        if v.handleMouseOver:
             w.addMouseOverListener(v)
 
     for s in v.subviews:
@@ -158,6 +281,10 @@ method viewWillMoveToWindow*(v: View, w: Window) {.base.} =
         s.viewWillMoveToWindow(w)
 
 method viewDidMoveToWindow*(v: View){.base.} =
+    if not v.window.isNil:
+        for c in v.layout.constraints.mitems:
+            v.instantiateConstraint(c)
+
     for s in v.subviews:
         s.viewDidMoveToWindow()
 
@@ -177,6 +304,11 @@ template setNeedsDisplay*(v: View) =
             w.needsDisplay = true
             w.markNeedsDisplay()
 
+template setNeedsLayout*(v: View) =
+    let w = v.window
+    if not w.isNil:
+        w.needsLayout = true
+
 method didAddSubview*(v, s: View) {.base.} = discard
 method didRemoveSubview*(v, s: View) {.base.} = discard
 
@@ -186,6 +318,7 @@ proc removeSubview(v: View, s: View) =
         v.subviews.delete(i)
         v.didRemoveSubview(s)
         v.setNeedsDisplay()
+        v.setNeedsLayout()
 
 proc removeFromSuperview(v: View, callHandlers: bool) =
     if v.superview != nil:
@@ -200,6 +333,10 @@ proc removeFromSuperview(v: View, callHandlers: bool) =
 method removeFromSuperview*(v: View) {.base.} =
     v.removeFromSuperview(true)
 
+proc removeAllSubviews*(v: View)=
+    while v.subviews.len > 0:
+        v.subviews[0].removeFromSuperview()
+
 proc insertSubview*(v, s: View, i: int) =
     if s.superview != v:
         if v.window != s.window: s.viewWillMoveToWindow(v.window)
@@ -210,7 +347,6 @@ proc insertSubview*(v, s: View, i: int) =
         s.moveToWindow(v.window)
         s.viewDidMoveToWindow()
         v.didAddSubview(s)
-        v.setNeedsDisplay()
     else:
         var index = v.subviews.find(s)
         if index < 0 or i == index:
@@ -223,17 +359,21 @@ proc insertSubview*(v, s: View, i: int) =
             v.subviews.insert(s, i - 1)
 
         s.superview = v
-        v.setNeedsDisplay()
+    v.setNeedsDisplay()
+    v.setNeedsLayout()
 
 proc insertSubviewAfter*(v, s, a: View) = v.insertSubview(s, v.subviews.find(a) + 1)
 proc insertSubviewBefore*(v, s, a: View) = v.insertSubview(s, v.subviews.find(a))
 proc addSubview*(v: View, s: View) = v.insertSubview(s, v.subviews.len)
 
-method replaceSubview*(v, s, withView: View) {.base.} =
+method replaceSubview*(v: View, subviewIndex: int, withView: View) {.base.} =
+    v.subviews[subviewIndex].removeFromSuperview()
+    v.insertSubview(withView, subviewIndex)
+
+proc replaceSubview*(v, s, withView: View) =
     assert(s.superview == v)
     let i = v.subviews.find(s)
-    s.removeFromSuperview()
-    v.insertSubview(withView, i)
+    v.replaceSubview(i, withView)
 
 method clipType*(v: View): ClipType {.base.} = ctNone
 
@@ -250,6 +390,8 @@ proc drawWithinSuperview*(v: View) =
         # Simplify calculation
         tmpTransform.translate(newVector3(v.frame.x - v.bounds.x, v.frame.y - v.bounds.y))
     else:
+        echo "bounds: ", v.bounds
+        echo "frame: ", v.frame
         assert(false, "Not implemented")
 
     c.withTransform tmpTransform:
@@ -283,9 +425,9 @@ proc drawFocusRing*(v: View) =
     c.strokeWidth = 3
     c.drawRoundedRect(v.bounds.inset(-1, -1), 2)
 
-method setFrame*(v: View, r: Rect) {.base.}
+method setFrame*(v: View, r: Rect) {.base.} # Deprecated
 
-method resizeSubviews*(v: View, oldSize: Size) {.base.} =
+method resizeSubviews*(v: View, oldSize: Size) {.base.} = # Deprecated
     let sizeDiff = v.frame.size - oldSize
 
     for s in v.subviews:
@@ -302,29 +444,42 @@ method resizeSubviews*(v: View, oldSize: Size) {.base.} =
 
         s.setFrame(newRect)
 
-method setBoundsSize*(v: View, s: Size) {.base.} =
+method updateLayout*(v: View) {.base.} = discard
+
+proc recursiveUpdateLayout*(v: View, relPoint: Point) =
+    v.frame.origin.x = v.layout.vars.x.value - relPoint.x
+    v.frame.origin.y = v.layout.vars.y.value - relPoint.y
+    v.frame.size.width = v.layout.vars.width.value
+    v.frame.size.height = v.layout.vars.height.value
+    v.bounds.size = v.frame.size
+    v.updateLayout()
+    let relPoint = newPoint(v.layout.vars.x.value, v.layout.vars.y.value)
+    for s in v.subviews:
+        s.recursiveUpdateLayout(relPoint)
+
+method setBoundsSize*(v: View, s: Size) {.base.} = # Deprecated
     let oldSize = v.bounds.size
     v.bounds.size = s
     v.setNeedsDisplay()
     v.resizeSubviews(oldSize)
 
-method setBoundsOrigin*(v: View, o: Point) {.base.} =
+method setBoundsOrigin*(v: View, o: Point) {.base.} = # Deprecated
     v.bounds.origin = o
     v.setNeedsDisplay()
 
-proc setBounds*(v: View, b: Rect) =
+proc setBounds*(v: View, b: Rect) = # Deprecated
     v.setBoundsOrigin(b.origin)
     v.setBoundsSize(b.size)
 
-method setFrameSize*(v: View, s: Size) {.base.} =
+method setFrameSize*(v: View, s: Size) {.base.} = # Deprecated
     v.frame.size = s
     v.setBoundsSize(s)
 
-method setFrameOrigin*(v: View, o: Point) {.base.} =
+method setFrameOrigin*(v: View, o: Point) {.base.} = # Deprecated
     v.frame.origin = o
     v.setNeedsDisplay()
 
-method setFrame*(v: View, r: Rect) =
+method setFrame*(v: View, r: Rect) = # Deprecated
     if v.frame.origin != r.origin:
         v.setFrameOrigin(r.origin)
     if v.frame.size != r.size:
@@ -333,9 +488,9 @@ method setFrame*(v: View, r: Rect) =
 method frame*(v: View): Rect {.base.} = v.frame
 method bounds*(v: View): Rect {.base.} = v.bounds
 
-method subviewDidChangeDesiredSize*(v: View, sub: View, desiredSize: Size) {.base.} = discard
+method subviewDidChangeDesiredSize*(v: View, sub: View, desiredSize: Size) {.base.} = discard # Deprecated
 
-proc autoresizingMaskFromStrLit(s: string): set[AutoresizingFlag] {.compileTime.} =
+proc autoresizingMaskFromStrLit(s: string): set[AutoresizingFlag] {.compileTime.} = # Deprecated
     case s[0]
     of 'w': result.incl(afFlexibleWidth)
     of 'l': result.incl(afFlexibleMinX)
@@ -347,7 +502,7 @@ proc autoresizingMaskFromStrLit(s: string): set[AutoresizingFlag] {.compileTime.
     of 'b': result.incl(afFlexibleMaxY)
     else: assert(false, "Wrong autoresizing mask!")
 
-template `resizingMask=`*(v: View, s: static[string]) =
+template `resizingMask=`*(v: View, s: static[string]) = # Deprecated
     const m = autoresizingMaskFromStrLit(s)
     v.autoresizingMask = m
 
@@ -422,5 +577,57 @@ method deserializeFields*(v: View, s: Deserializer) =
         v.addSubview(sv)
     s.deserialize("arMask", v.autoresizingMask)
     s.deserialize("color", v.backgroundColor)
+
+proc isLastInSuperview(d: View): bool =
+    d.superview.subviews[^1] == d
+
+proc constraintsForFixedFrame*(f: Rect, superSize: Size, m: set[AutoresizingFlag]): seq[Constraint] =
+    # Don't use!
+    if afFlexibleMinX in m:
+        result.add(selfPHS.width == f.width)
+        result.add(selfPHS.right == superPHS.right - (superSize.width - f.maxX))
+    elif afFlexibleWidth in m:
+        result.add(selfPHS.left == superPHS.left + f.x)
+        result.add(selfPHS.right == superPHS.right - (superSize.width - f.maxX))
+    else:
+        result.add(selfPHS.left == superPHS.left + f.x)
+        result.add(selfPHS.width == f.width)
+
+    if afFlexibleMinY in m:
+        result.add(selfPHS.height == f.height)
+        result.add(selfPHS.bottom == superPHS.bottom - (superSize.height - f.maxY))
+    elif afFlexibleHeight in m:
+        result.add(selfPHS.top == superPHS.top + f.y)
+        result.add(selfPHS.bottom == superPHS.bottom - (superSize.height - f.maxY))
+    else:
+        result.add(selfPHS.top == superPHS.top + f.y)
+        result.add(selfPHS.height == f.height)
+
+proc dump(d, root: View, indent, output: var string, printer: proc(v: View): string) =
+    let oldIndentLen = indent.len
+    if d != root:
+        var p = d.superview
+        if p != root:
+            indent &= (if p.isLastInSuperview(): "   " else: "│  ")
+
+        output &= indent
+        output &= (if d.isLastInSuperview(): "└─ " else: "├─ ")
+
+    output &= printer(d)
+    output &= '\n'
+
+    for c in d.subviews:
+        dump(c, root, indent, output, printer)
+
+    indent.setLen(oldIndentLen)
+
+proc dump*(v: View, printer: proc(v: View): string): string =
+    var indent = newStringOfCap(256)
+    result = newStringOfCap(2048)
+    v.dump(v, indent, result, printer)
+
+proc dump*(v: View): string =
+    v.dump() do(v: View) -> string:
+        v.className
 
 registerClass(View)

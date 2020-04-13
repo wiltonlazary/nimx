@@ -4,12 +4,75 @@ import jsbind
 
 import nimx/[ abstract_window, system_logger, view, context, matrixes, app,
             portable_gl, event ]
-import nimx.private.js_vk_map
+import nimx/private/js_vk_map
 
 type JSCanvasWindow* = ref object of Window
     renderingContext: GraphicsContext
     canvas: Element
 
+method fullscreenAvailable*(w: JSCanvasWindow): bool =
+    var res = false
+
+    {.emit: """
+        if (document.fullscreenEnabled !== undefined) {
+            `res` = document.fullscreenEnabled;
+        } else if (document.webkitFullscreenEnabled !== undefined) {
+            `res` = document.webkitFullscreenEnabled;
+        } else if (document.mozFullScreenEnabled !== undefined) {
+            `res` = document.mozFullScreenEnabled;
+        } else if (document.msFullscreenEnabled !== undefined) {
+            `res` = document.msFullscreenEnabled;
+        }
+    """.}
+
+    result = res
+
+method fullscreen*(w: JSCanvasWindow): bool =
+    var res = false
+
+    {.emit: """
+        if (document.fullscreenElement !== undefined) {
+            `res` = document.fullscreenElement !== null;
+        } else if (document.fullscreenElement !== undefined) {
+            `res` = document.webkitFullscreenElement !== null;
+        } else if (document.mozFullScreenElement !== undefined) {
+            `res` = document.mozFullScreenElement !== null;
+        } else if (document.msFullscreenElement !== undefined) {
+            `res` = document.msFullscreenElement !== null;
+        }
+    """.}
+
+    result = res
+
+
+method `fullscreen=`*(w: JSCanvasWindow, v: bool) =
+    let isFullscreen = w.fullscreen
+    let c = w.canvas
+
+    if not isFullscreen and v:
+        {.emit: """
+            if (`c`.requestFullscreen) {
+                `c`.requestFullscreen();
+            } else if (`c`.webkitRequestFullscreen) {
+                `c`.webkitRequestFullscreen();
+            } else if (`c`.mozRequestFullScreen) {
+                `c`.mozRequestFullScreen();
+            } else if (`c`.msRequestFullscreen) {
+                `c`.msRequestFullscreen();
+            }
+        """.}
+    elif isFullscreen and not v:
+        {.emit: """
+            if (document.exitFullscreen) {
+                document.exitFullscreen();
+            } else if (document.webkitExitFullscreen) {
+                document.webkitExitFullscreen();
+            } else if (document.mozCancelFullScreen) {
+                document.mozCancelFullScreen();
+            } else if (document.msExitFullscreen) {
+                document.msExitFullscreen();
+            }
+        """.}
 
 export abstract_window
 
@@ -41,6 +104,8 @@ proc setupWebGL() =
     """.}
 
     proc onkey(evt: dom.Event) =
+        when declared(KeyboardEvent):
+          let evt = cast[KeyboardEvent](evt)
         var wnd : JSCanvasWindow
         var repeat = false
         let bs = buttonStateFromKeyEvent(evt)
@@ -74,6 +139,8 @@ proc setupWebGL() =
 setupWebGL()
 
 proc buttonCodeFromJSEvent(e: dom.Event): VirtualKey =
+    when declared(MouseEvent):
+      let e = cast[MouseEvent](e)
     case e.button:
         of 1: VirtualKey.MouseButtonPrimary
         of 2: VirtualKey.MouseButtonSecondary
@@ -87,74 +154,69 @@ proc eventLocationFromJSEvent(e: dom.Event, c: Element): Point =
     `offx` = r.left;
     `offy` = r.top;
     """.}
+    when declared(MouseEvent):
+      let e = cast[MouseEvent](e)
     result.x = e.clientX.Coord - offx
     result.y = e.clientY.Coord - offy
 
 proc setupEventHandlersForCanvas(w: JSCanvasWindow, c: Element) =
     let onmousedown = proc (e: dom.Event) =
-        handleJSExceptions:
-            var evt = newMouseDownEvent(eventLocationFromJSEvent(e, c), buttonCodeFromJSEvent(e))
-            evt.window = w
-            discard mainApplication().handleEvent(evt)
+        var evt = newMouseDownEvent(eventLocationFromJSEvent(e, c), buttonCodeFromJSEvent(e))
+        evt.window = w
+        discard mainApplication().handleEvent(evt)
 
     let onmouseup = proc (e: dom.Event) =
-        handleJSExceptions:
-            var evt = newMouseUpEvent(eventLocationFromJSEvent(e, c), buttonCodeFromJSEvent(e))
-            evt.window = w
-            discard mainApplication().handleEvent(evt)
+        var evt = newMouseUpEvent(eventLocationFromJSEvent(e, c), buttonCodeFromJSEvent(e))
+        evt.window = w
+        discard mainApplication().handleEvent(evt)
 
     let onmousemove = proc (e: dom.Event) =
-        handleJSExceptions:
-            var evt = newMouseMoveEvent(eventLocationFromJSEvent(e, c))
-            evt.window = w
-            discard mainApplication().handleEvent(evt)
+        var evt = newMouseMoveEvent(eventLocationFromJSEvent(e, c))
+        evt.window = w
+        discard mainApplication().handleEvent(evt)
 
     let onscroll = proc (e: dom.Event): bool =
-        handleJSExceptions:
-            var evt = newEvent(etScroll, eventLocationFromJSEvent(e, c))
-            var x, y: Coord
-            {.emit: """
-            `x` = `e`.deltaX;
-            `y` = `e`.deltaY;
-            """.}
-            evt.offset.x = x
-            evt.offset.y = y
-            evt.window = w
-            result = not mainApplication().handleEvent(evt)
+        var evt = newEvent(etScroll, eventLocationFromJSEvent(e, c))
+        var x, y: Coord
+        {.emit: """
+        `x` = `e`.deltaX;
+        `y` = `e`.deltaY;
+        """.}
+        evt.offset.x = x
+        evt.offset.y = y
+        evt.window = w
+        result = not mainApplication().handleEvent(evt)
 
     let onresize = proc (e: dom.Event): bool =
-        handleJSExceptions:
-            var sizeChanged = false
-            var newWidth, newHeight : Coord
-            {.emit: """
-            `newWidth` = `c`.width;
-            `newHeight` = `c`.height;
-            var r = `c`.getBoundingClientRect();
-            if (r.width !== `c`.width) {
-                `newWidth` = r.width;
-                `c`.width = r.width;
-                `sizeChanged` = true;
-            }
-            if (r.height !== `c`.height) {
-                `newHeight` = r.height
-                `c`.height = r.height;
-                `sizeChanged` = true;
-            }
-            """.}
-            if sizeChanged:
-                var evt = newEvent(etWindowResized)
-                evt.window = w
-                evt.position.x = newWidth
-                evt.position.y = newHeight
-                discard mainApplication().handleEvent(evt)
+        var sizeChanged = false
+        var newWidth, newHeight : Coord
+        {.emit: """
+        `newWidth` = `c`.width;
+        `newHeight` = `c`.height;
+        var r = `c`.getBoundingClientRect();
+        if (r.width !== `c`.width) {
+            `newWidth` = r.width;
+            `c`.width = r.width;
+            `sizeChanged` = true;
+        }
+        if (r.height !== `c`.height) {
+            `newHeight` = r.height
+            `c`.height = r.height;
+            `sizeChanged` = true;
+        }
+        """.}
+        if sizeChanged:
+            var evt = newEvent(etWindowResized)
+            evt.window = w
+            evt.position.x = newWidth
+            evt.position.y = newHeight
+            discard mainApplication().handleEvent(evt)
 
     let onfocus = proc()=
-        handleJSExceptions:
-            w.onFocusChange(true)
+        w.onFocusChange(true)
 
     let onblur = proc()=
-        handleJSExceptions:
-            w.onFocusChange(false)
+        w.onFocusChange(false)
 
     # TODO: Remove this hack, when handlers definition in dom.nim fixed.
     {.emit: """
@@ -171,9 +233,8 @@ proc setupEventHandlersForCanvas(w: JSCanvasWindow, c: Element) =
 proc requestAnimFrame(w: dom.Window, p: proc() {.nimcall.}) {.importcpp.}
 
 proc animFrame() =
-    handleJSExceptions:
-        mainApplication().runAnimations()
-        mainApplication().drawWindows()
+    mainApplication().runAnimations()
+    mainApplication().drawWindows()
     dom.window.requestAnimFrame(animFrame)
 
 proc initWithCanvas*(w: JSCanvasWindow, canvas: Element) =
@@ -274,8 +335,7 @@ proc sendInputEvent(wnd: JSCanvasWindow, evt: dom.Event) =
 
 method startTextInput*(wnd: JSCanvasWindow, r: Rect) =
     let oninput = proc(evt: dom.Event) =
-        handleJSExceptions:
-            wnd.sendInputEvent(evt)
+        wnd.sendInputEvent(evt)
 
     {.emit: """
     if (window.__nimx_textinput === undefined) {
@@ -297,7 +357,6 @@ method stopTextInput*(w: JSCanvasWindow) =
     }
     """.}
 
-template runApplication*(code: typed): typed =
+template runApplication*(code: typed) =
     dom.window.onload = proc (e: dom.Event) =
-        handleJSExceptions:
-            code
+        code

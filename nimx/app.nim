@@ -35,6 +35,10 @@ proc mainApplication*(): Application =
 proc addWindow*(a: Application, w: Window) =
     a.windows.add(w)
 
+proc removeWindow*(a: Application, w: Window) =
+    let i = a.windows.find(w)
+    if i >= 0: a.windows.delete(i)
+
 proc handleEvent*(a: Application, e: var Event): bool =
     if numberOfActiveTouches() == 0 and e.kind == etMouse and e.buttonState == bsUp:
         # There may be cases when mouse up is not paired with mouse down.
@@ -52,7 +56,7 @@ proc handleEvent*(a: Application, e: var Event): bool =
         fakeEvent.window = e.window
         discard a.handleEvent(fakeEvent)
 
-    incrementActiveTouchesIfNeeded(e)
+    beginTouchProcessing(e)
 
     if e.kind == etMouse or e.kind == etTouch or e.kind == etKeyboard:
         let kc = e.keyCode
@@ -66,7 +70,7 @@ proc handleEvent*(a: Application, e: var Event): bool =
                 a.modifiers.excl(kc)
             a.inputState.excl(kc)
 
-        e.modifiers = a.modifiers
+    e.modifiers = a.modifiers
 
     var control = efcContinue
     var cleanupEventFilters = false
@@ -90,10 +94,13 @@ proc handleEvent*(a: Application, e: var Event): bool =
         elif e.kind == etAppWillEnterForeground:
             for w in a.windows: w.enableAnimation(true)
 
-    decrementActiveTouchesIfNeeded(e)
+    endTouchProcessing(e)
 
 proc drawWindows*(a: Application) =
     for w in a.windows:
+        if w.needsLayout:
+            w.updateWindowLayout()
+
         if w.needsDisplay:
             w.drawWindow()
 

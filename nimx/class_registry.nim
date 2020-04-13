@@ -1,22 +1,57 @@
-import tables, typetraits, macros, variant
+import tables, macros, variant
+import typetraits except getTypeid, Typeid # see https://github.com/nim-lang/Nim/pull/13305
 
-macro superType(t: typed): untyped =
-    # let ty = getImpl(t.symbol)
-    # echo "n: ", treeRepr(t)
-    # echo "ty: ",                treeRepr(getType(t))
+proc skipPtrRef(n: NimNode): NimNode =
+    let ty = getImpl(n)
+    result = n
+    if ty[2].kind in {nnkRefTy, nnkPtrTy} and ty[2][0].kind == nnkSym:
+        result = ty[2][0].skipPtrRef()
 
-    let ty = getType(t)
-    let refSym = ty[1][0]
-    # echo "tysssss: ",                treeRepr(refSym)
-    # echo "ty ...: ",            treeRepr(getType(getType(t)[1][1]))
-    # echo "ty .......: ",        treeRepr(getType(getType(t)[1][1])[1])
+proc nodeTypedefInheritsFrom(n: NimNode): NimNode =
+    n.expectKind(nnkTypeDef)
+    if n[2].kind == nnkRefTy and n[2][0].kind == nnkObjectTy and n[2][0][1].kind == nnkOfInherit:
+        result = n[2][0][1][0]
 
-    result = getType(ty[1][1])[1]
-    result = newNimNode(nnkBracketExpr).add(refSym, result)
-    #echo "impl: ", treeRepr(ty)
-    #result = ty[2][0][1][0]
+proc `*`(s: string, i: int): string {.compileTime, used.} =
+    result = ""
+    for ii in 0 ..< i: result &= s
+
+proc superTypeAux(t: NimNode, indent: int): NimNode =
+    doAssert(indent < 10, "Recursion too deep")
+
+    template superTypeAux(t: NimNode): NimNode = superTypeAux(t, indent + 1)
+    proc log(args: varargs[string, `$`]) =
+        discard
+        # echo "- ", "  " * indent, args.join(" ")
+
+    log "superTypeAux: ", treeRepr(t)
+    case t.kind
+    of nnkSym:
+        if $t == "RootRef": return t
+        let ty = getTypeImpl(t)
+        log "TypeKind: ", ty.typeKind
+        result = superTypeAux(ty)
+    of nnkBracketExpr:
+        result = superTypeAux(getImpl(t[1]))
+    of nnkTypeDef:
+        result = nodeTypedefInheritsFrom(t)
+        if result.isNil:
+            result = superTypeAux(getTypeInst(t[2]))
+    of nnkRefTy:
+        result = superTypeAux(getTypeImpl(t[^1]))
+    of nnkObjectTy:
+        t[1].expectKind(nnkOfInherit)
+        result = t[1][0]
+    else:
+        log "unknown node : ", treeRepr(t)
+        doAssert(false, "Unknown node")
+
+    log "result ", repr(result)
+
+macro superType(t: typed): untyped = superTypeAux(t, 0)
 
 method className*(o: RootRef): string {.base.} = discard
+method classTypeId*(o: RootRef): TypeId {.base.} = getTypeId(RootRef)
 
 type ClassInfo = tuple
     creatorProc: proc(): RootRef {.nimcall.}
@@ -30,7 +65,7 @@ var superTypeRelations = initTable[TypeId, TypeId]()
 proc registerTypeRelation(a: typedesc) =
     type ParentType = superType(a)
     if not superTypeRelations.hasKeyOrPut(getTypeId(a), getTypeId(ParentType)):
-        when RootRef isnot ParentType:
+        when (RootRef isnot ParentType) and (RootObj isnot ParentType):
             registerTypeRelation(ParentType)
 
 proc isTypeOf(tself, tsuper: TypeId): bool =
@@ -45,11 +80,13 @@ proc isSubtypeOf(tself, tsuper: TypeId): bool = tself != tsuper and isTypeOf(tse
 
 template registerClass*(a: typedesc, creator: (proc(): RootRef)) =
     const TName = typetraits.name(a)
+    const tid = getTypeId(a)
     method className*(o: a): string = TName
+    method classTypeId*(o: a): TypeId = tid
     registerTypeRelation(a)
     var info: ClassInfo
     info.creatorProc = creator
-    info.typ = getTypeId(a)
+    info.typ = tid
     classFactory[TName] = info
 
 template registerClass*(a: typedesc) =
@@ -87,11 +124,19 @@ when isMainModule:
     type C = ref object of B
 
     echo "typeId RootRef: ", getTypeId(RootRef)
+    echo "typeId RootObj: ", getTypeId(RootObj)
     echo "typeId A: ", getTypeId(A)
     echo "typeId B: ", getTypeId(B)
 
     echo "typeId superType(A): ", getTypeId(superType(A))
     echo "typeId superType(B): ", getTypeId(superType(B))
+
+    template sameType(t1, t2: typedesc): bool =
+        t1 is t2 and t2 is t1
+
+    assert sameType(superType(A), RootRef)
+    assert sameType(superType(B), A)
+    assert sameType(superType(C), B)
 
     registerClass(A)
     registerClass(B)
@@ -125,3 +170,14 @@ when isMainModule:
     doAssert(a.className() == "A")
     doAssert(b.className() == "B")
     doAssert(c.className() == "C")
+
+    doAssert(a.classTypeId() == getTypeId(A))
+    doAssert(b.classTypeId() == getTypeId(B))
+    doAssert(c.classTypeId() == getTypeId(C))
+
+    proc getSupertypeTypeId(a: typedesc): TypeId =
+        type ParentType = superType(a)
+        const id = getTypeId(ParentType)
+        return id
+
+    doAssert(getSupertypeTypeId(A) == getTypeId(RootRef))

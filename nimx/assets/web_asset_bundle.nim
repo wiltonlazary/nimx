@@ -1,7 +1,7 @@
-import ospaths, strutils
+import os, strutils
 import abstract_asset_bundle, url_stream
 
-import nimx.pathutils
+import nimx/pathutils
 
 var resourceUrlMapper*: proc(p: string): string # Deprecated
 
@@ -19,12 +19,13 @@ type WebAssetBundle* = ref object of AssetBundle
 proc newWebAssetBundle*(): WebAssetBundle =
     result.new()
     result.mHref = getCurrentHref().parentDir()
-    result.mBaseUrl = result.mHref / "res"
+    result.mBaseUrl = result.mHref & "/res"
 
 method urlForPath*(ab: WebAssetBundle, path: string): string =
-    if resourceUrlMapper.isNil:
-        result = ab.mBaseUrl / path
-    else:
-        result = resourceUrlMapper("res" / path)
-        if not result.startsWith("http"):
-            result = ab.mHref / result
+    {.gcsafe.}:
+        if resourceUrlMapper.isNil:
+            result = ab.mBaseUrl & "/" & path
+        else:
+            result = resourceUrlMapper("res/" & path)
+            if not result.startsWith("http"):
+                result = ab.mHref & "/" & result

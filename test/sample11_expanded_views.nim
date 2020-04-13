@@ -1,17 +1,6 @@
-import sample_registry
-import strutils
 import random
-
-import nimx.view
-import nimx.font
-import nimx.context
-import nimx.composition
-import nimx.button
-import nimx.autotest
-
-import nimx.event
-import nimx.expanding_view
-import nimx.stack_view
+import sample_registry
+import nimx / [ view, font, context, button, expanding_view, stack_view ]
 
 type ExpandingSampleView = ref object of View
     welcomeFont: Font
@@ -23,13 +12,13 @@ method init(v: ExpandingSampleView, r: Rect) =
     v.addSubview(stackView)
 
     for i in 0..4:
-        let rand_y = random( (100 .. 400) )
+        let rand_y = rand(100 .. 400)
         let expView = newExpandingView(newRect(0, 0, 300, rand_y.Coord), true)
         expView.title = "newExpandedView " & $i
         stackView.addSubview(expView)
 
         for i in 0..4:
-            let rand_y = random( (0 .. 300) )
+            let rand_y = rand(0 .. 300)
             let expView1 = newExpandingView(newRect(0, 0, 300, 10), true)
             expView1.title = "WOW " & $i
             expView.addContent(expView1)
@@ -37,7 +26,7 @@ method init(v: ExpandingSampleView, r: Rect) =
             let testView = newView(newRect(0,0, 100, rand_y.Coord))
             testView.backgroundColor = newColor(0.2, 1.2, 0.2, 1.0)
             expView1.addContent(testView)
-            let closeBttn = newButton(testView, newPoint(10, 10), newSize(16, 16), "X")
+            discard newButton(testView, newPoint(10, 10), newSize(16, 16), "X")
 
 method draw(v: ExpandingSampleView, r: Rect) =
     let c = currentContext()

@@ -1,15 +1,9 @@
 
-import view
-import animation
-import times
-import context
-import font
-import composition
-import resource
+import view, animation, context, font, composition, image, notification_center,
+    mini_profiler, portable_gl, drag_and_drop
+import times, tables
 import image
-import notification_center
-import mini_profiler
-import portable_gl
+import kiwi
 export view
 
 # Window type is defined in view module
@@ -23,8 +17,9 @@ const AW_FOCUS_LEAVE* = "AW_FOCUS_LEAVE"
 method `title=`*(w: Window, t: string) {.base.} = discard
 method title*(w: Window): string {.base.} = ""
 
-method onResize*(w: Window, newSize: Size) {.base.} =
-    procCall w.View.setFrameSize(newSize)
+method fullscreenAvailable*(w: Window): bool {.base.} = false
+method fullscreen*(w: Window): bool {.base.} = false
+method `fullscreen=`*(w: Window, v: bool) {.base.} = discard
 
 # Bug 2488. Can not use {.global.} for JS target.
 var lastTime = epochTime()
@@ -50,10 +45,45 @@ when false:
         memory = int(4 * memory / 1024 / 1024)
         return memory
 
+
+method show*(w: Window) {.base.} = discard
+method hide*(w: Window) {.base.} = discard
+
+proc shouldUseConstraintSystem(w: Window): bool {.inline.} =
+    # We assume that constraint system should not be used if there are no
+    # constraints in the solver.
+    # All of this is done to preserve temporary backwards compatibility with the
+    # legacy autoresizing masks system.
+    # 4 is the number of constraints added by the window itself for every of
+    # its edit variables.
+    w.layoutSolver.constraintsCount > 4
+
+proc updateWindowLayout*(w: Window) =
+    w.needsLayout = false
+    if w.shouldUseConstraintSystem:
+        w.layoutSolver.updateVariables()
+        let oldSz = newSize(w.layout.vars.width.value, w.layout.vars.height.value)
+        w.recursiveUpdateLayout(zeroPoint)
+        let newSz = newSize(w.layout.vars.width.value, w.layout.vars.height.value)
+        if newSz != oldSz:
+            discard # TODO: update window size
+
+method onResize*(w: Window, newSize: Size) {.base.} =
+    if w.shouldUseConstraintSystem:
+        w.layoutSolver.suggestValue(w.layout.vars.width, newSize.width)
+        w.layoutSolver.suggestValue(w.layout.vars.height, newSize.height)
+        w.updateWindowLayout()
+    else:
+        procCall w.View.setFrameSize(newSize)
+
 method drawWindow*(w: Window) {.base.} =
+    if w.needsLayout:
+        w.updateWindowLayout()
+
     w.needsDisplay = false
 
     w.recursiveDrawSubviews()
+    let c = currentContext()
 
     let profiler = sharedProfiler()
     if profiler.enabled:
@@ -64,7 +94,6 @@ method drawWindow*(w: Window) {.base.} =
 
         const fontSize = 14
         const profilerWidth = 110
-        let c = currentContext()
         var font = systemFont()
         let old_size = font.size
         font.size = fontSize
@@ -83,6 +112,18 @@ method drawWindow*(w: Window) {.base.} =
     ResetOverdrawValue()
     ResetDIPValue()
 
+    let dc = currentDragSystem()
+    if not dc.pItem.isNil:
+        var rect = newRect(0, 0, 20, 20)
+        rect.origin += currentDragSystem().itemPosition
+
+        if not dc.image.isNil:
+            rect.size = dc.image.size
+            c.drawImage(dc.image, rect)
+        else:
+            c.fillColor = newColor(0.0, 1.0, 0.0, 0.8)
+            c.drawRect(rect)
+
 method draw*(w: Window, rect: Rect) =
     let c = currentContext()
     let gl = c.gl
@@ -91,7 +132,14 @@ method draw*(w: Window, rect: Rect) =
         w.mActiveBgColor = w.backgroundColor
     gl.clear(gl.COLOR_BUFFER_BIT or gl.STENCIL_BUFFER_BIT or gl.DEPTH_BUFFER_BIT)
 
-method enableAnimation*(w: Window, flag: bool) {.base.} = discard
+method animationStateChanged*(w: Window, state: bool) {.base.} = discard
+
+proc isAnimationEnabled*(w: Window): bool = w.mAnimationEnabled
+
+proc enableAnimation*(w: Window, flag: bool) =
+    if w.mAnimationEnabled != flag:
+        w.mAnimationEnabled = flag
+        w.animationStateChanged(flag)
 
 method startTextInput*(w: Window, r: Rect) {.base.} = discard
 method stopTextInput*(w: Window) {.base.} = discard
@@ -115,13 +163,6 @@ proc runAnimations*(w: Window) =
 
         if totalAnims > 0:
             w.needsDisplay = true
-
-    # TODO: DIRTY HACK FOR iOS. Please refactor this shit.
-    when defined(ios):
-        if prevAnimsCount == 0:
-            w.enableAnimation(true)
-        totalAnims = 1
-        return
 
     if prevAnimsCount == 0 and totalAnims >= 1:
         w.enableAnimation(true)
@@ -164,13 +205,22 @@ method init*(w: Window, frame: Rect) =
     procCall w.View.init(frame)
     w.window = w
     w.needsDisplay = true
+    w.mCurrentTouches = newTable[int, View]()
     w.mouseOverListeners = @[]
     w.animationRunners = @[]
     w.pixelRatio = 1.0
+    let s = newSolver()
+    w.layoutSolver = s
+    s.addConstraint(w.layout.vars.x == 0)
+    s.addConstraint(w.layout.vars.y == 0)
+    s.addEditVariable(w.layout.vars.width, STRONG)
+    s.addEditVariable(w.layout.vars.height, STRONG)
+
+    s.suggestValue(w.layout.vars.width, frame.width)
+    s.suggestValue(w.layout.vars.height, frame.height)
 
     #default animation runner for window
-    var defaultRunner = newAnimationRunner()
-    w.addAnimationRunner(defaultRunner)
+    w.addAnimationRunner(newAnimationRunner())
 
 method enterFullscreen*(w: Window) {.base.} = discard
 method exitFullscreen*(w: Window) {.base.} = discard

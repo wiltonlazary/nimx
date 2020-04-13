@@ -1,118 +1,273 @@
-import sdl2 except Event, Rect
+import sdl2 except Event, Rect, Point
 
 import nimx/[ abstract_window, system_logger, view, context, event, app, screen,
                 linkage_details, portable_gl ]
-import nimx.private.sdl_vk_map
+import nimx/private/sdl_vk_map
 import opengl
-
+import times, logging
 
 export abstract_window
+
+const
+    x11Platform = defined(linux) and not defined(emscripten) and not defined(android)
+    waylandPlatform = defined(linux) and not defined(emscripten) and not defined(android)
+    appkitPlatform = defined(macosx) and not defined(ios)
 
 proc initSDLIfNeeded() =
     var sdlInitialized {.global.} = false
     if not sdlInitialized:
         if sdl2.init(INIT_VIDEO) != SdlSuccess:
-            logi "Error: sdl2.init(INIT_VIDEO): ", getError()
+            error "sdl2.init(INIT_VIDEO): ", getError()
+
         sdlInitialized = true
+
         if glSetAttribute(SDL_GL_STENCIL_SIZE, 8) != 0:
-            logi "Error: could not set stencil size: ", getError()
+            error "could not set stencil size: ", getError()
+        if glSetAttribute(SDL_GL_DEPTH_SIZE, 8) != 0:
+            error "could not set depth size: ", getError()
 
         when defined(ios) or defined(android):
-            discard glSetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, 0x0004)
+            if glSetAttribute(SDL_GL_RED_SIZE, 8) == 0 and
+                glSetAttribute(SDL_GL_GREEN_SIZE, 8) == 0 and
+                glSetAttribute(SDL_GL_BLUE_SIZE, 8) == 0:
+                info "supported color format RGB888"
+            else: #if RGB888 not support
+                discard glSetAttribute(SDL_GL_RED_SIZE, 5)
+                discard glSetAttribute(SDL_GL_GREEN_SIZE, 6)
+                discard glSetAttribute(SDL_GL_BLUE_SIZE, 5)
+                info "supported color format RGB565"
+
+            discard glSetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES)
             discard glSetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2)
 
 type SdlWindow* = ref object of Window
     impl: WindowPtr
     sdlGlContext: GlContextPtr
     renderingContext: GraphicsContext
+    isFullscreen: bool
 
-when defined(macosx) and not defined(ios):
-    import nimx.private.objc_appkit
-    enableObjC()
-    {.emit: "#import <AppKit/AppKit.h>".}
-    type NSWindow {.importc, header: "<AppKit/AppKit.h>", final.} = distinct int
+when defined(ios) or defined(android):
+    method fullscreen*(w: SdlWindow): bool = true
+else:
+    method fullscreenAvailable*(w: SdlWindow): bool = true
+    method fullscreen*(w: SdlWindow): bool = w.isFullscreen
+    method `fullscreen=`*(w: SdlWindow, v: bool) =
+        var res: SDL_Return = SdlError
 
-    proc scaleFactor(w: SdlWindow): float32 =
-        var wminfo: WMInfo
-        discard w.impl.getWMInfo(wminfo)
-        let nsWindow = cast[NSWindow](wminfo.padding)
+        if v and not w.isFullscreen:
+            res = w.impl.setFullscreen(SDL_WINDOW_FULLSCREEN_DESKTOP)
+        elif not v and w.isFullscreen:
+            res = w.impl.setFullscreen(0)
 
-        {.emit: """
-        `result` = [`nsWindow` respondsToSelector: @selector(backingScaleFactor)] ? [`nsWindow` backingScaleFactor] : 1.0f;
-        """.}
+        if res == SdlSuccess:
+            w.isFullscreen = v
 
+proc getSDLWindow*(wnd: SdlWindow): WindowPtr = wnd.impl
 
-var animationEnabled = 0
+var animationEnabled = false
 
-method enableAnimation*(w: SdlWindow, flag: bool) =
-    doAssert( (animationEnabled == 0 and flag) or (animationEnabled != 0 and not flag) , "animationEnabled: " & $animationEnabled & " flag: " & $flag)
-    if flag:
-        inc animationEnabled
-        when defined(ios):
+proc checkImpl(wnd: SdlWindow) = assert(not wnd.impl.isNil) # internal error
+
+proc setOSWindowSize(wnd: SdlWindow, sz: Size) =
+    wnd.checkImpl()
+    let sz = sz * wnd.pixelRatio
+    wnd.impl.setSize(cint(sz.width), cint(sz.height))
+
+proc setOSWindowPos(wnd: SdlWindow, p: Point) =
+    wnd.checkImpl()
+    wnd.impl.setPosition(cint(p.x * wnd.pixelRatio), cint(p.y * wnd.pixelRatio))
+
+proc setOSWindowFrame(wnd: SdlWindow, r: Rect) {.used.} =
+    wnd.setOSWindowPos(r.origin)
+    wnd.setOSWindowSize(r.size)
+
+proc getOsWindowSize(wnd: SdlWindow): Size =
+    wnd.checkImpl()
+    var x, y: cint
+    wnd.impl.getSize(x, y)
+    result = newSize(x.Coord, y.Coord) / wnd.pixelRatio
+
+proc getOsWindowPos(wnd: SdlWindow): Point =
+    wnd.checkImpl()
+    var x, y: cint
+    wnd.impl.getPosition(x, y)
+    result = newPoint(x.Coord, y.Coord) / wnd.pixelRatio
+
+proc getOsWindowFrame(wnd: SdlWindow): Rect =
+    newRect(wnd.getOsWindowPos(), wnd.getOsWindowSize())
+
+method animationStateChanged*(w: SdlWindow, state: bool) =
+    animationEnabled = state
+    when defined(ios):
+        if state:
             proc animationCallback(p: pointer) {.cdecl.} =
                 let w = cast[SdlWindow](p)
                 w.runAnimations()
                 w.drawWindow()
             discard iPhoneSetAnimationCallback(w.impl, 0, animationCallback, cast[pointer](w))
-    else:
-        dec animationEnabled
-        when defined(ios):
+        else:
             discard iPhoneSetAnimationCallback(w.impl, 0, nil, nil)
 
 # SDL does not provide window id in touch event info, so we add this workaround
 # assuming that touch devices may have only one window.
 var defaultWindow: SdlWindow
 
-proc initCommon(w: SdlWindow, r: view.Rect) =
+proc flags(w: SdlWindow): cuint=
+    result = SDL_WINDOW_OPENGL or SDL_WINDOW_RESIZABLE or SDL_WINDOW_ALLOW_HIGHDPI or SDL_WINDOW_HIDDEN
+    if w.isFullscreen:
+        result = result or SDL_WINDOW_FULLSCREEN_DESKTOP
+    # else:
+        # result = result or SDL_WINDOW_HIDDEN
+
+when appkitPlatform:
+    import darwin/app_kit/nswindow
+elif x11Platform:
+    import x11/[xresource, xlib], parseutils
+
+# when waylandPlatform:
+#     import wayland/client as wl
+
+proc scaleFactor(w: SdlWindow): float =
+    when appkitPlatform or x11Platform:
+        var dpi = 96.0
+        var winInfo: WMinfo
+        getVersion(winInfo.version)
+
+        if w.impl.getWMInfo(winInfo) == True32:
+            case winInfo.subsystem
+            of SysWM_X11:
+                when x11Platform:
+                    type WMinfoX11 = object
+                        version*: SDL_Version
+                        subsystem*: SysWMType
+                        display*: PDisplay
+                        window*: culong
+
+                    let wi = cast[ptr WMinfoX11](addr winInfo)
+                    let display = wi.display
+
+                    if not display.isNil:
+                        let nd = XOpenDisplay(DisplayString(display))
+                        if not nd.isNil:
+                            let resourceString = XResourceManagerString(nd)
+                            if not resourceString.isNil:
+                                XrmInitialize() # Need to initialize the DB before calling Xrm* functions
+                                let db = XrmGetStringDatabase(resourceString)
+                                if not db.isNil:
+                                    var value: TXrmValue
+                                    var typ: cstring
+                                    if XrmGetResource(db, "Xft.dpi", "String", addr typ, addr value) != 0:
+                                        if not value.address.isNil:
+                                            discard parseFloat($cstring(value.address), dpi, 0)
+                                    XrmDestroyDatabase(db)
+
+                            discard XCloseDisplay(nd)
+            of SysWM_Cocoa:
+                when appkitPlatform:
+                    let nsWindow = cast[ptr NSWindow](addr winInfo.padding[0])[]
+                    if not nsWindow.isNil:
+                        result = nsWindow.scaleFactor
+            of SysWM_Wayland:
+                when waylandPlatform:
+                    discard
+                    # TODO:
+
+                    # type WMinfoWayland = object
+                    #     version*: SDL_Version
+                    #     subsystem*: SysWMType
+                    #     display*: wl.Display
+                    #     surface*: wl.Surface
+
+                    # let wi = cast[ptr WMinfoWayland](addr winInfo)
+                    # let reg = wi.display.getRegistry()
+            else:
+                discard
+
+        result = dpi / 96
+    else:
+        result = screenScaleFactor()
+
+proc updatePixelRatio(w: SdlWindow) {.inline.} =
+    when defined(ios):
+        w.pixelRatio = 1
+        w.viewportPixelRatio = w.scaleFactor()
+    else:
+        w.pixelRatio = w.scaleFactor()
+        w.viewportPixelRatio = w.pixelRatio
+
+proc initSdlWindow(w: SdlWindow, r: view.Rect) =
+    initSDLIfNeeded()
+    when defined(ios) or defined(android):
+        w.isFullscreen = true
+        w.impl = createWindow(nil, 0, 0, r.width.cint, r.height.cint, w.flags)
+    else:
+        w.impl = createWindow(nil, cint(r.x), cint(r.y), cint(r.width), cint(r.height), w.flags)
+
     if w.impl == nil:
-        logi "Could not create window!"
+        error "Could not create window!"
         quit 1
     if defaultWindow.isNil:
         defaultWindow = w
-    procCall init(w.Window, r)
+
+    w.updatePixelRatio()
+    if w.pixelRatio != 1.0:
+        if not w.isFullscreen: w.setOSWindowPos(r.origin)
+        w.setOSWindowSize(r.size)
+
     discard glSetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1)
     w.sdlGlContext = w.impl.glCreateContext()
     if w.sdlGlContext == nil:
-        logi "Could not create context!"
+        error "Could not create context!"
     discard glMakeCurrent(w.impl, w.sdlGlContext)
     w.renderingContext = newGraphicsContext()
 
     mainApplication().addWindow(w)
     discard w.impl.setData("__nimx_wnd", cast[pointer](w))
-    w.onResize(r.size)
-
-proc initFullscreen*(w: SdlWindow) =
-    initSDLIfNeeded()
-    var displayMode : DisplayMode
-    discard getDesktopDisplayMode(0, displayMode)
-    let flags = SDL_WINDOW_OPENGL or SDL_WINDOW_FULLSCREEN or SDL_WINDOW_RESIZABLE or SDL_WINDOW_ALLOW_HIGHDPI
-    w.impl = createWindow(nil, 0, 0, displayMode.w, displayMode.h, flags)
-
-    var width, height : cint
-    w.impl.getSize(width, height)
-    w.initCommon(newRect(0, 0, Coord(width), Coord(height)))
 
 method init*(w: SdlWindow, r: view.Rect) =
-    when defined(ios):
-        w.initFullscreen()
-    else:
-        initSDLIfNeeded()
-        w.impl = createWindow(nil, cint(r.x), cint(r.y), cint(r.width), cint(r.height), SDL_WINDOW_OPENGL or SDL_WINDOW_RESIZABLE or SDL_WINDOW_ALLOW_HIGHDPI)
-        w.initCommon(newRect(0, 0, r.width, r.height))
+    w.initSdlWindow(r)
+    let r = w.getOsWindowFrame()
+    procCall w.Window.init(r)
+    w.onResize(r.size)
 
 proc newFullscreenSdlWindow*(): SdlWindow =
+    initSDLIfNeeded()
+
+    var displayMode : DisplayMode
+    discard getDesktopDisplayMode(0, displayMode)
+
     result.new()
-    result.initFullscreen()
+    result.init(newRect(0, 0, displayMode.w.Coord, displayMode.h.Coord))
 
 proc newSdlWindow*(r: view.Rect): SdlWindow =
     result.new()
     result.init(r)
 
+method show*(w: SdlWindow)=
+    if w.impl.isNil:
+        w.initSdlWindow(w.frame)
+        w.setFrameOrigin zeroPoint
+
+    w.impl.showWindow()
+    w.impl.raiseWindow()
+
+method hide*(w: SdlWindow)=
+    let p = w.getOsWindowPos()
+    w.setFrameOrigin(p)
+
+    mainApplication().removeWindow(w)
+    w.impl.destroyWindow()
+    w.impl = nil
+    w.sdlGlContext = nil
+    w.renderingContext = nil
+
 newWindow = proc(r: view.Rect): Window =
     result = newSdlWindow(r)
+    result.show()
 
 newFullscreenWindow = proc(): Window =
     result = newFullscreenSdlWindow()
+    result.show()
 
 method `title=`*(w: SdlWindow, t: string) =
     w.impl.setTitle(t)
@@ -130,6 +285,7 @@ method draw*(w: SdlWindow, r: Rect) =
     gl.stencilMask(0x00)
 
 method drawWindow(w: SdlWindow) =
+    discard glMakeCurrent(w.impl, w.sdlGlContext)
     let c = w.renderingContext
     let oldContext = setCurrentContext(c)
     c.withTransform ortho(0, w.frame.width, w.frame.height, 0, -1, 1):
@@ -143,8 +299,8 @@ proc windowFromSDLEvent[T](event: T): SdlWindow =
     if sdlWin != nil:
         result = cast[SdlWindow](sdlWin.getData("__nimx_wnd"))
 
-proc positionFromSDLEvent[T](event: T): auto =
-    newPoint(event.x.Coord, event.y.Coord)
+proc positionFromSDLEvent[T](w: SdlWindow, event: T): Point {.inline.} =
+    newPoint(event.x.Coord, event.y.Coord) / w.pixelRatio
 
 template buttonStateFromSDLState(s: KeyState): ButtonState =
     if s == KeyPressed:
@@ -173,15 +329,21 @@ proc eventWithSDLEvent(event: ptr sdl2.Event): Event =
             let wndEv = cast[WindowEventPtr](event)
             let wnd = windowFromSDLEvent(wndEv)
             case wndEv.event:
-                of WindowEvent_Resized:
+                of WindowEvent_Resized, WindowEvent_SizeChanged:
                     result = newEvent(etWindowResized)
                     result.window = wnd
-                    result.position.x = wndEv.data1.Coord
-                    result.position.y = wndEv.data2.Coord
+                    result.position = newPoint(wndEv.data1.Coord, wndEv.data2.Coord) / wnd.pixelRatio
                 of WindowEvent_FocusGained:
                     wnd.onFocusChange(true)
                 of WindowEvent_FocusLost:
                     wnd.onFocusChange(false)
+                of WindowEvent_Exposed:
+                    wnd.setNeedsDisplay()
+                of WindowEvent_Close:
+                    if wnd.onClose.isNil:
+                        wnd.hide()
+                    else:
+                        wnd.onClose()
                 else:
                     discard
 
@@ -195,23 +357,23 @@ proc eventWithSDLEvent(event: ptr sdl2.Event): Event =
             let mouseEv = cast[MouseButtonEventPtr](event)
             if mouseEv.which != SDL_TOUCH_MOUSEID:
                 let wnd = windowFromSDLEvent(mouseEv)
-                let state = buttonStateFromSDLState(mouseEv.state.KeyState)
-                let button = case mouseEv.button:
-                    of sdl2.BUTTON_LEFT: VirtualKey.MouseButtonPrimary
-                    of sdl2.BUTTON_MIDDLE: VirtualKey.MouseButtonMiddle
-                    of sdl2.BUTTON_RIGHT: VirtualKey.MouseButtonSecondary
-                    else: VirtualKey.Unknown
-                let pos = positionFromSDLEvent(mouseEv)
-                result = newMouseButtonEvent(pos, button, state, mouseEv.timestamp)
-                result.window = wnd
+                if wnd != nil:
+                    let state = buttonStateFromSDLState(mouseEv.state.KeyState)
+                    let button = case mouseEv.button:
+                        of sdl2.BUTTON_LEFT: VirtualKey.MouseButtonPrimary
+                        of sdl2.BUTTON_MIDDLE: VirtualKey.MouseButtonMiddle
+                        of sdl2.BUTTON_RIGHT: VirtualKey.MouseButtonSecondary
+                        else: VirtualKey.Unknown
+                    let pos = wnd.positionFromSDLEvent(mouseEv)
+                    result = newMouseButtonEvent(pos, button, state, mouseEv.timestamp)
+                    result.window = wnd
 
         of MouseMotion:
             let mouseEv = cast[MouseMotionEventPtr](event)
             if mouseEv.which != SDL_TOUCH_MOUSEID:
-                #logi("which: " & $mouseEv.which)
                 let wnd = windowFromSDLEvent(mouseEv)
                 if wnd != nil:
-                    let pos = positionFromSDLEvent(mouseEv)
+                    let pos = wnd.positionFromSDLEvent(mouseEv)
                     result = newMouseMoveEvent(pos, mouseEv.timestamp)
                     result.window = wnd
 
@@ -221,12 +383,13 @@ proc eventWithSDLEvent(event: ptr sdl2.Event): Event =
             if wnd != nil:
                 var x, y: cint
                 getMouseState(x, y)
-                let pos = newPoint(x.Coord, y.Coord)
+                let pos = newPoint(x.Coord, y.Coord) / wnd.pixelRatio
                 result = newEvent(etScroll, pos)
                 result.window = wnd
-                const multiplier = when defined(windows): 30.0 else: 1.0
-                result.offset.x = mouseEv.x.Coord * multiplier
-                result.offset.y = mouseEv.y.Coord * multiplier
+                const multiplierX = when not defined(macosx): 30.0 else: 1.0
+                const multiplierY = when not defined(macosx): -30.0 else: 1.0
+                result.offset.x = mouseEv.x.Coord * multiplierX
+                result.offset.y = mouseEv.y.Coord * multiplierY
 
         of KeyDown, KeyUp:
             let keyEv = cast[KeyboardEventPtr](event)
@@ -253,8 +416,13 @@ proc eventWithSDLEvent(event: ptr sdl2.Event): Event =
         of AppWillEnterForeground:
             result = newEvent(etAppWillEnterForeground)
 
+        of DisplayEvent:
+            # Sometimes happens on android resulting in black screen, so we need to
+            # redraw.
+            if not defaultWindow.isNil:
+                defaultWindow.setNeedsDisplay()
         else:
-            #echo "Unknown event: ", event.kind
+            info "Unknown event: ", event.kind
             discard
 
 proc handleEvent(event: ptr sdl2.Event): Bool32 =
@@ -262,7 +430,7 @@ proc handleEvent(event: ptr sdl2.Event): Bool32 =
         let evt = cast[UserEventPtr](event)
         let p = cast[proc (data: pointer) {.cdecl.}](evt.data1)
         if p.isNil:
-            logi "WARNING: UserEvent5 with nil proc"
+            warn "UserEvent5 with nil proc"
         else:
             p(evt.data2)
     else:
@@ -273,12 +441,19 @@ proc handleEvent(event: ptr sdl2.Event): Bool32 =
     result = True32
 
 method onResize*(w: SdlWindow, newSize: Size) =
-    when defined(macosx) and not defined(ios):
-        w.pixelRatio = w.scaleFactor()
-    else:
-        w.pixelRatio = screenScaleFactor()
-    glViewport(0, 0, GLSizei(newSize.width * w.pixelRatio), GLsizei(newSize.height * w.pixelRatio))
+    discard glMakeCurrent(w.impl, w.sdlGlContext)
+    w.updatePixelRatio()
     procCall w.Window.onResize(newSize)
+
+    let constrainedSize = w.frame.size
+    if constrainedSize != newSize:
+        # Here we attempt to prevent window resizing (initiated externally)
+        # On linux this doesn't work reliably, more research needed.
+        when not x11Platform and not defined(android) and not defined(ios):
+            w.setOSWindowSize(constrainedSize)
+
+    let vp = constrainedSize * w.viewportPixelRatio
+    glViewport(0, 0, GLSizei(vp.width), GLsizei(vp.height))
 
 when false:
     # Framerate limiter
@@ -296,30 +471,33 @@ proc animateAndDraw() =
         mainApplication().runAnimations()
         mainApplication().drawWindows()
     else:
-        if animationEnabled == 0:
+        if not animationEnabled:
             mainApplication().runAnimations()
             mainApplication().drawWindows()
 
+when defined(useRealtimeGC):
+    var lastFullCollectTime = 0.0
+    const fullCollectThreshold = 128 * 1024 * 1024 # 128 Megabytes
+
 proc nextEvent(evt: var sdl2.Event) =
-    if gcRequested:
-        echo "full collect"
-        GC_fullCollect()
-        gcRequested = false
+    when not defined(useRealtimeGC):
+        if gcRequested:
+            info "GC_fullCollect"
+            GC_fullCollect()
+            gcRequested = false
 
     when defined(ios):
-        proc iPhoneSetEventPump(enabled: Bool32) {.importc: "SDL_iPhoneSetEventPump".}
-
         iPhoneSetEventPump(true)
         pumpEvents()
         iPhoneSetEventPump(false)
         while pollEvent(evt):
             discard handleEvent(addr evt)
 
-        if animationEnabled == 0:
+        if not animationEnabled:
             mainApplication().drawWindows()
     else:
         var doPoll = false
-        if animationEnabled > 0:
+        if animationEnabled:
             doPoll = true
         elif waitEvent(evt):
             discard handleEvent(addr evt)
@@ -334,11 +512,40 @@ proc nextEvent(evt: var sdl2.Event) =
 
         animateAndDraw()
 
+    when defined(useRealtimeGC):
+        let t = epochTime()
+        if gcRequested or (t > lastFullCollectTime + 10 and getOccupiedMem() > fullCollectThreshold):
+            GC_enable()
+            GC_setMaxPause(0)
+            GC_fullCollect()
+            GC_disable()
+            lastFullCollectTime = t
+            gcRequested = false
+        else:
+            GC_step(1000, true)
+
 method startTextInput*(w: SdlWindow, r: Rect) =
     startTextInput()
 
 method stopTextInput*(w: SdlWindow) =
     stopTextInput()
+
+when defined(macosx): # Most likely should be enabled for linux and windows...
+    # Handle live resize on macos
+    {.push stackTrace: off.} # This can be called on background thread
+    proc resizeEventWatch(userdata: pointer; event: ptr sdl2.Event): Bool32 {.cdecl.} =
+        if event.kind == WindowEvent:
+            let wndEv = cast[WindowEventPtr](event)
+            case wndEv.event
+            of WindowEvent_Resized:
+                let wnd = windowFromSDLEvent(wndEv)
+                var evt = newEvent(etWindowResized)
+                evt.window = wnd
+                evt.position = newPoint(wndEv.data1.Coord, wndEv.data2.Coord) / wnd.pixelRatio
+                discard mainApplication().handleEvent(evt)
+            else:
+                discard
+    {.pop.}
 
 proc runUntilQuit*() =
     # Initialize fist dummy event. The kind should be any unused kind.
@@ -346,19 +553,20 @@ proc runUntilQuit*() =
     #setEventFilter(eventFilter, nil)
     animateAndDraw()
 
+    when defined(macosx):
+        addEventWatch(resizeEventWatch, nil)
+
     # Main loop
     while true:
         nextEvent(evt)
         if evt.kind == QuitEvent:
             break
 
-    discard quit(evt)
+template runApplication*(body: typed) =
+    when defined(useRealtimeGC):
+        GC_disable() # We disable the GC to manually call it close to stack bottom.
 
-template runApplication*(body: typed): typed =
-    try:
-        body
-        runUntilQuit()
-    except:
-        logi "Exception caught: ", getCurrentExceptionMsg()
-        logi getCurrentException().getStackTrace()
-        quit 1
+    sdlMain()
+
+    body
+    runUntilQuit()

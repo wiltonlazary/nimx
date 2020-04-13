@@ -1,6 +1,6 @@
 import nimx/[ abstract_window, system_logger, view, context, event, app,
              linkage_details, portable_gl, screen ]
-import nimx.private.objc_appkit
+import nimx/private/objc_appkit
 import opengl
 import unicode, times
 
@@ -164,9 +164,15 @@ type AppkitWindow* = ref object of Window
 type AppDelegate = ref object
     init: proc()
 
+when defined(ios):
+    method fullscreen*(w: AppkitWindow): bool = true
+else:
+    method `fullscreen=`*(w: AppkitWindow, v: bool) =
+        raise newException(OSError, "Not implemented yet")
+
 var animationEnabled = 0
 
-method enableAnimation*(w: AppkitWindow, flag: bool) =
+method animationStateChanged*(w: AppkitWindow, flag: bool) =
     discard
 
 proc initCommon(w: AppkitWindow, r: view.Rect) =
@@ -476,7 +482,7 @@ proc runUntilQuit(d: AppDelegate) =
 
     # discard quit(evt)
 
-template runApplication*(body: typed): stmt =
+template runApplication*(body: typed) =
     try:
         let appDelegate = AppDelegate.new()
         appDelegate.init = proc() =
@@ -610,6 +616,50 @@ NSOpenGLPixelFormat* createPixelFormat(NSRect frame, int colorBits, int depthBit
     [super keyUp: e];
 }
 
+- (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+    NSLog(@"text: %@", string);
+}
+
+- (void)doCommandBySelector:(SEL)selector {
+
+}
+
+- (void)setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange {
+
+}
+
+- (void)unmarkText {
+
+}
+
+- (NSRange)selectedRange {
+    return NSMakeRange(0, 0);
+}
+
+- (NSRange)markedRange {
+    return NSMakeRange(0, 0);
+}
+
+- (BOOL)hasMarkedText {
+    return NO;
+}
+
+- (nullable NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range actualRange:(nullable NSRangePointer)actualRange {
+    return nil;
+}
+
+- (NSArray<NSString *> *)validAttributesForMarkedText {
+    return nil;
+}
+
+- (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(nullable NSRangePointer)actualRange {
+    return NSZeroRect;
+}
+
+- (NSUInteger)characterIndexForPoint:(NSPoint)point {
+    return -1;
+}
+
 @end
 
 @implementation __NimxWindow__
@@ -627,7 +677,9 @@ NSOpenGLPixelFormat* createPixelFormat(NSRect frame, int colorBits, int depthBit
 @end
 
 @implementation __NimxAppDelegate__
-- (void)applicationDidFinishLaunching:(NSNotification *)aNotification { `appDidFinishLaunching`(d); }
+- (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
+    `appDidFinishLaunching`(d);
+}
 @end
 
 """.}

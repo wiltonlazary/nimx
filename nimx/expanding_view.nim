@@ -1,17 +1,12 @@
-import math
+import nimx/font
+import nimx/button
+import nimx/view
+import nimx/context
+import nimx/types
+import nimx/color
 
-import nimx.font
-import nimx.image
-import nimx.button
-import nimx.view
-import nimx.event
-import nimx.view_event_handling_new
-import nimx.context
-import nimx.types
-import nimx.color
-
-import nimx.stack_view
-import nimx.common.expand_button
+import nimx/stack_view
+import nimx/common/expand_button
 
 const titleSize = 20.0
 const expandButtonSize = 20.0
@@ -36,12 +31,13 @@ proc updateFrame(v: ExpandingView) =
     if v.hasOffset:
         expandRect.size.width = expandRect.width + expandButtonSize
 
+    expandRect.origin = v.frame.origin
     if v.expanded:
         expandRect.size.height = expandRect.height + titleSize
         v.setFrame(expandRect)
     else:
         expandRect.size.height = titleSize
-        v.setFrame(newRect(v.contentView.frame.x, v.contentView.frame.y, expandRect.size.width, titleSize))
+        v.setFrame(newRect(v.frame.x, v.frame.y, expandRect.size.width, titleSize))
 
     if not v.superview.isNil:
         v.superview.subviewDidChangeDesiredSize(v, v.frame().size)
@@ -52,7 +48,7 @@ proc updateFrame(v: ExpandingView) =
     elif not v.contentView.superview.isNil:
         v.contentView.removeFromSuperView()
 
-method init*(v: ExpandingView, r: Rect, hasOffset: bool) =
+proc init*(v: ExpandingView, r: Rect, hasOffset: bool) =
     procCall v.View.init(r)
     v.backgroundColor = newColor(0.2, 0.2, 0.2, 1.0)
     v.title = "Expanded View"
@@ -107,49 +103,9 @@ proc addContent*(v: ExpandingView, subView: View) =
     v.contentView.addSubview(subView)
     v.updateFrame()
 
-proc startDrag(v: ExpandingView, e: Event) =
-    v.isDragged = true
-    v.dragPoint = v.frame.origin - e.position
-    echo "start drag"
-
-proc processDrag(v: ExpandingView, e: Event) =
-    if v.isDragged:
-        v.setFrameOrigin(e.position + v.dragPoint)
-
-proc stopDrag(v: ExpandingView, e: Event) =
-    if v.isDragged:
-        let index = v.superview.subviews.find(v)
-        let count = v.superview.subviews.len()
-        for i in 0 .. count - 2:
-            if v.frame.origin.y > v.superview.subviews[i].frame.origin.y and v.frame.origin.y < v.superview.subviews[i + 1].frame.origin.y:
-                v.superview.insertSubview(v, i + 1)
-                break
-
-        if v.frame.origin.y < v.superview.subviews[0].frame.origin.y:
-            v.superview.insertSubview(v, 0)
-        elif v.frame.origin.y > v.superview.subviews[count - 1].frame.origin.y:
-            v.superview.insertSubview(v, count)
-
-        v.isDragged = false
-        v.updateFrame()
-        echo "stopDrag"
-
-method onTouchEv*(v: ExpandingView, e: var Event) : bool =
-    discard procCall v.View.onTouchEv(e)
-    result = true
-
-    # case e.buttonState
-    # of bsDown:
-    #     discard
-    #     # echo e.position
-    #     # if v.convertPointFromWindow(e.position).inRect(newRect(0.0, 0.0, v.bounds.width, titleSize)):
-    #     #     v.startDrag(e)
-    # of bsUnknown:
-    #     v.processDrag(e)
-    # of bsUp:
-    #     v.stopDrag(e)
-    # else:
-    #     discard
+# method onTouchEv*(v: ExpandingView, e: var Event) : bool =
+#     discard procCall v.View.onTouchEv(e)
+#     result = true
 
 method subviewDidChangeDesiredSize*(v: ExpandingView, sub: View, desiredSize: Size) =
     v.updateFrame()

@@ -2,43 +2,43 @@ import strutils
 import tables
 import algorithm
 
-import nimx.view
-import nimx.text_field
-import nimx.matrixes
-import nimx.image
-import nimx.button
-import nimx.color_picker
-import nimx.context
-import nimx.portable_gl
-import nimx.popup_button
-import nimx.font
-import nimx.linear_layout
-import nimx.property_visitor
-import nimx.numeric_text_field
-import nimx.system_logger
-import nimx.image_preview
+import nimx/view
+import nimx/text_field
+import nimx/matrixes
+import nimx/image
+import nimx/button
+import nimx/color_picker
+import nimx/context
+import nimx/portable_gl
+import nimx/popup_button
+import nimx/font
+import nimx/linear_layout
+import nimx/property_visitor
+import nimx/numeric_text_field
+import nimx/system_logger
+import nimx/image_preview
 
-import nimx.property_editors.propedit_registry
+import nimx/property_editors/propedit_registry
 
 import variant
 
 when defined(js):
     from dom import alert
 elif not defined(android) and not defined(ios) and not defined(emscripten):
-    import native_dialogs
+    import os_files/dialog
 
-template toStr(v: SomeReal, precision: uint): string = formatFloat(v, ffDecimal, precision)
+template toStr(v: SomeFloat, precision: uint): string = formatFloat(v, ffDecimal, precision)
 template toStr(v: SomeInteger): string = $v
 
-template fromStr(v: string, t: var SomeReal) = t = v.parseFloat()
-template fromStr(v: string, t: var SomeInteger) = t = v.parseInt()
+template fromStr(v: string, t: var SomeFloat) = t = v.parseFloat()
+template fromStr(v: string, t: var SomeInteger) = t = type(t)(v.parseInt())
 
 proc newScalarPropertyView[T](setter: proc(s: T), getter: proc(): T): PropertyEditorView =
     result = PropertyEditorView.new(newRect(0, 0, 208, editorRowHeight))
     let tf = newNumericTextField(newRect(0, 0, 208, editorRowHeight))
     tf.autoresizingMask = {afFlexibleWidth, afFlexibleMaxY}
     tf.font = editorFont()
-    when T is SomeReal:
+    when T is SomeFloat:
         tf.text = toStr(getter(), tf.precision)
     else:
         tf.text = toStr(getter())
@@ -229,8 +229,14 @@ when not defined(android) and not defined(ios):
             elif defined(emscripten):
                 discard
             else:
-                let path = callDialogFileOpen("Select Image")
-                if not path.isNil:
+                var di: DialogInfo
+                di.title = "Select image"
+                di.kind = dkOpenFile
+                di.filters = @[(name:"PNG", ext:"*.png")]
+                let path = di.show()
+                echo "get path (", path, ")", path.len > 0
+                if path.len > 0:
+
                     var i: Image
                     try:
                         i = imageWithContentsOfFile(path)
@@ -418,6 +424,7 @@ registerPropertyEditor(newTextPropertyView)
 registerPropertyEditor(newScalarPropertyView[Coord])
 registerPropertyEditor(newScalarPropertyView[float])
 registerPropertyEditor(newScalarPropertyView[int])
+registerPropertyEditor(newScalarPropertyView[int16])
 registerPropertyEditor(newVecPropertyView[Vector2])
 registerPropertyEditor(newVecPropertyView[Vector3])
 registerPropertyEditor(newVecPropertyView[Vector4])

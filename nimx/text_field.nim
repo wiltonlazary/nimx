@@ -11,33 +11,52 @@ import table_view_cell
 import window_event_handling
 import property_visitor
 import serializers
-import pasteboard.pasteboard
+import pasteboard/pasteboard
 import key_commands
 import formatted_text
 import scroll_view
 
 export control
 
-type TextField* = ref object of Control
-    mText: FormattedText
-    #mText*: string
-    editable*: bool
-    continuous*: bool
-    selectable*: bool
-    isSelecting*: bool
-    textColor*: Color
-    mFont*: Font
-    selectionStartLine: int
-    selectionEndLine: int
-    textSelection: Slice[int]
-    multiline*: bool
-    hasBezel*: bool
+type
+    TextField* = ref object of Control
+        mText: FormattedText
+        mEditable: bool
+        continuous*: bool
+        mSelectable: bool
+        isSelecting*: bool
+        mFont*: Font
+        selectionStartLine: int
+        selectionEndLine: int
+        textSelection: Slice[int]
+        multiline*: bool
+        hasBezel*: bool
+
+    Label* = ref object of TextField
 
 template len[T](s: Slice[T]): T = s.b - s.a
 
 var cursorPos = 0
 var cursorVisible = true
 var cursorUpdateTimer : Timer
+
+proc selectable*(t: TextField): bool = t.mSelectable
+
+proc `selectable=`*(t: TextField, v: bool) =
+    if v:
+        t.backgroundColor.a = 1.0
+    else:
+        t.backgroundColor.a = 0.0
+    t.mSelectable = v
+
+proc editable*(t: TextField): bool = t.mEditable
+
+proc `editable=`*(t: TextField, v: bool)=
+    if v:
+        t.backgroundColor.a = 1.0
+    else:
+        t.backgroundColor.a = 0.0
+    t.mEditable = v
 
 var cursorOffset : Coord
 
@@ -77,6 +96,7 @@ proc newLabel*(r: Rect): TextField =
     result = newTextField(r)
     result.editable = false
     result.selectable = false
+    result.backgroundColor.a = 0
 
 proc newLabel*(parent: View = nil, position: Point = newPoint(0, 0), size: Size = newSize(100, 20), text: string = "label"): TextField =
     result = newLabel(newRect(position.x, position.y, size.width, size.height))
@@ -86,15 +106,25 @@ proc newLabel*(parent: View = nil, position: Point = newPoint(0, 0), size: Size 
     if not isNil(parent):
         parent.addSubview(result)
 
+proc `textColor=`*(t: TextField, c: Color)=
+    t.mText.setTextColorInRange(0, -1, c)
+
+proc textColor*(t: TextField): Color = t.mText.colorOfRuneAtPos(0).color1
+
 method init*(t: TextField, r: Rect) =
     procCall t.Control.init(r)
     t.editable = true
     t.selectable = true
     t.textSelection = -1 .. -1
-    t.textColor = newGrayColor(0.0)
+    t.backgroundColor = whiteColor()
     t.hasBezel = true
     t.mText = newFormattedText()
     t.mText.verticalAlignment = vaCenter
+
+method init*(v: Label, r: Rect) =
+    procCall v.TextField.init(r)
+    v.editable = false
+    v.selectable = false
 
 proc `font=`*(t: TextField, f: Font) =
     t.mFont = f
@@ -215,9 +245,11 @@ proc drawSelection(t: TextField) {.inline.} =
         c.drawRect(r)
 
 method draw*(t: TextField, r: Rect) =
+    procCall t.View.draw(r)
+
     let c = currentContext()
     if t.editable and t.hasBezel:
-        c.fillColor = whiteColor()
+        c.fillColor = t.backgroundColor
         c.strokeColor = newGrayColor(0.74)
         c.strokeWidth = 1.0
         c.drawRect(t.bounds)
@@ -260,10 +292,12 @@ method onTouchEv*(t: TextField, e: var Event): bool =
                 else:
                     t.mText.getClosestCursorPositionToPoint(pt, cursorPos, cursorOffset)
                     t.textSelection = cursorPos .. cursorPos
+                t.bumpCursorVisibility()
 
     of bsUp:
         if t.selectable and t.isSelecting:
             t.isSelecting = false
+            t.window.startTextInput(t.convertRectToWindow(t.bounds))
             if t.textSelection.len != 0:
                 let oldPos = cursorPos
                 t.mText.getClosestCursorPositionToPoint(pt, cursorPos, cursorOffset)
@@ -421,23 +455,23 @@ method onKeyDown*(t: TextField, e: var Event): bool =
         if cmd == kcSelectAll: t.selectAll()
         t.focusOnCursor()
 
-        when defined(macosx) or defined(windows):
-            case cmd
-            of kcPaste:
+        when defined(macosx) or defined(windows) or defined(linux):
+            if cmd == kcPaste:
                 if t.editable:
                     let s = pasteboardWithName(PboardGeneral).readString()
-                    if not s.isNil:
+                    if s.len != 0:
                         t.insertText(s)
-            of kcCopy, kcCut, kcUseSelectionForFind:
+
+        when defined(macosx) or defined(windows) or defined(linux) or defined(emscripten) or defined(js):
+            if cmd in { kcCopy, kcCut, kcUseSelectionForFind }:
                 let s = t.selectedText()
-                if not s.isNil:
+                if s.len != 0:
                     if cmd == kcUseSelectionForFind:
                         pasteboardWithName(PboardFind).writeString(s)
                     else:
                         pasteboardWithName(PboardGeneral).writeString(s)
                     if cmd == kcCut and t.editable:
                         t.clearSelection()
-            else: discard
 
 method onTextInput*(t: TextField, s: string): bool =
     if not t.editable: return false
@@ -449,6 +483,10 @@ method viewShouldResignFirstResponder*(v: TextField, newFirstResponder: View): b
     cursorUpdateTimer.clear()
     cursorVisible = false
     v.textSelection = -1 .. -1
+
+    if not v.window.isNil:
+        v.window.stopTextInput()
+
     v.sendAction()
 
 method viewDidBecomeFirstResponder*(t: TextField) =
@@ -462,18 +500,15 @@ method visitProperties*(v: TextField, pv: var PropertyVisitor) =
     procCall v.Control.visitProperties(pv)
     pv.visitProperty("text", v.text)
     pv.visitProperty("editable", v.editable)
-    pv.visitProperty("textColor", v.textColor)
 
-method serializeFields*(v: TextField, s: Serializer) =
-    procCall v.View.serializeFields(s)
-    s.serialize("text", v.text)
-    s.serialize("editable", v.editable)
-    s.serialize("textColor", v.textColor)
+# method serializeFields*(v: TextField, s: Serializer) =
+#     procCall v.View.serializeFields(s)
+#     s.serialize("text", v.text)
+#     s.serialize("editable", v.editable)
 
-method deserializeFields*(v: TextField, s: Deserializer) =
-    procCall v.View.deserializeFields(s)
-    s.deserialize("text", v.mText)
-    s.deserialize("editable", v.editable)
-    s.deserialize("textColor", v.textColor)
+# method deserializeFields*(v: TextField, s: Deserializer) =
+#     procCall v.View.deserializeFields(s)
+#     s.deserialize("text", v.mText)
+#     s.deserialize("editable", v.editable)
 
 registerClass(TextField)

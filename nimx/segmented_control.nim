@@ -5,8 +5,6 @@ import composition
 import context
 import font
 import view_event_handling
-import view_event_handling_new
-import app
 import property_visitor
 import serializers
 
@@ -54,11 +52,11 @@ method init*(s: SegmentedControl, r: Rect) =
     procCall s.Control.init(r)
     s.segments = @["hello", "world", "yo"]
 
+method updateLayout*(s: SegmentedControl) =
+    s.widthsValid = false
+
 proc recalculateSegmentWidths(s: SegmentedControl) =
-    if s.widths.isNil:
-        s.widths = newSeq[Coord](s.mSegments.len)
-    else:
-        s.widths.setLen(s.mSegments.len)
+    s.widths.setLen(s.mSegments.len)
 
     let font = systemFont()
     var totalWidth = 0.Coord

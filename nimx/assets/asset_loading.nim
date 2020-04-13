@@ -1,4 +1,4 @@
-import tables, ospaths, streams, variant, logging
+import os, streams, variant, logging
 import asset_cache, url_stream
 
 type UrlLoaderProc* = proc(url, path: string, cache: AssetCache, handler: proc())
@@ -7,7 +7,7 @@ type StreamLoaderProc* = proc(s: Stream, path: string, cache: AssetCache, handle
 type SimpleStreamLoaderProc*[T] = proc(s: Stream, handler: proc(v: T))
 
 
-const anyUrlScheme = "_any"
+const anyUrlScheme = "_"
 
 var assetLoaders = newSeq[tuple[urlSchemes: seq[string], extensions: seq[string], loader: UrlLoaderProc]]()
 
@@ -34,7 +34,7 @@ proc registerAssetLoader*[T](fileExtensions: openarray[string], loader: SimpleUr
 proc registerAssetLoader*(fileExtensions: openarray[string], streamLoader: StreamLoaderProc) =
     let loader = proc(url, path: string, cache: AssetCache, handler: proc()) =
         openStreamForUrl(url) do(s: Stream, err: string):
-            if err.isNil:
+            if err.len == 0:
                 streamLoader(s, path, cache, handler)
             else:
                 handler()
@@ -43,7 +43,7 @@ proc registerAssetLoader*(fileExtensions: openarray[string], streamLoader: Strea
 proc registerAssetLoader*[T](fileExtensions: openarray[string], streamLoader: SimpleStreamLoaderProc[T]) =
     let loader = proc(url, path: string, cache: AssetCache, handler: proc()) =
         openStreamForUrl(url) do(s: Stream, err: string):
-            if err.isNil:
+            if err.len == 0:
                 streamLoader(s) do(v: T):
                     s.close()
                     cache.registerAsset(path, v)
@@ -64,15 +64,23 @@ proc loadAsset*(url, path: string, cache: AssetCache, handler: proc()) =
     let scheme = url.urlScheme()
     if scheme == "res":
         hackyResUrlLoader(url, path, cache) do(err: string):
-            if not err.isNil:
+            if err.len != 0:
                 error "loading asset ", url, ": ", err
             handler()
         return
 
+    var genericLoader = -1
     for i in 0 ..< assetLoaders.len:
-        if (scheme in assetLoaders[i].urlSchemes or anyUrlScheme in assetLoaders[i].urlSchemes) and getExt(url) in assetLoaders[i].extensions:
-            assetLoaders[i].loader(url, path, cache, handler)
-            return
+        if getExt(url) in assetLoaders[i].extensions:
+            if scheme in assetLoaders[i].urlSchemes: # Perfect match:
+                assetLoaders[i].loader(url, path, cache, handler)
+                return
+            elif anyUrlScheme in assetLoaders[i].urlSchemes: # Generic match
+                genericLoader = i
+
+    if genericLoader != -1:
+        assetLoaders[genericLoader].loader(url, path, cache, handler)
+        return
 
     raise newException(Exception, "No asset loader found for url: " & url)
 
@@ -81,7 +89,7 @@ proc loadAsset*[T](url: string, handler: proc(a: T, err: string)) =
     loadAsset(url, "k", c) do():
         let v = c.getOrDefault("k")
         if v.ofType(T):
-            handler(v.get(T), nil)
+            handler(v.get(T), "")
         else:
             var b: T
             handler(b, "Wrong  asset type")

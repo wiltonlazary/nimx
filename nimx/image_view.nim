@@ -1,10 +1,6 @@
-import nimx.context
-import nimx.image
-import nimx.types
-import nimx.view
-import nimx.property_visitor
-import nimx.serializers
-import nimx.resource
+import nimx / [ context, image, types, view ]
+import nimx/property_visitor
+import nimx/serializers
 
 type
     ImageFillRule* {.pure.} = enum
@@ -65,7 +61,7 @@ method draw(v: ImageView, r: Rect) =
             let cols = r.width.int div v.image.size.width.int + 1
             let rows = r.height.int div v.image.size.height.int + 1
             for col in 0 ..< cols:
-                for row in 0..< rows:
+                for row in 0 ..< rows:
                     let imageRect = newRect(col.Coord * v.image.size.width, row.Coord * v.image.size.height, v.image.size.width, v.image.size.height)
                     c.drawImage(v.image, imageRect)
         of ImageFillRule.FitWidth:
@@ -98,7 +94,7 @@ method visitProperties*(v: ImageView, pv: var PropertyVisitor) =
 
 method serializeFields*(v: ImageView, s: Serializer) =
     procCall v.View.serializeFields(s)
-    s.serialize("image", resourceNameForPath(v.image.filePath))
+    s.serialize("image", v.image.filePath)
     s.serialize("fillRule", v.fillRule)
     s.serialize("marginLeft", v.imageMarginLeft)
     s.serialize("marginRight", v.imageMarginRight)
@@ -110,7 +106,7 @@ method deserializeFields*(v: ImageView, s: Deserializer) =
     s.deserialize("fillRule", v.fillRule)
     var imgName : string
     s.deserialize("image", imgName)
-    if not imgName.isNil:
+    if imgName.len != 0:
         v.image = imageWithResource(imgName)
     s.deserialize("marginLeft", v.imageMarginLeft)
     s.deserialize("marginRight", v.imageMarginRight)

@@ -1,25 +1,16 @@
-#!/usr/local/bin/nim c -r --noMain
-
+#!/usr/local/bin/nim c -r --threads:on
 import sample_registry
 
-import nimx.view
-import nimx.system_logger
-import nimx.app
-import nimx.scroll_view
-import nimx.table_view
-import nimx.text_field
-import nimx.autotest
-import nimx.window
-import nimx.linear_layout
+import nimx / [ view, scroll_view, table_view, text_field, autotest, window, linear_layout ]
+import sequtils, intsets
 
-
-import sequtils
-import intsets
+{.warning[UnusedImport]: off.}
 
 import sample01_welcome
 import sample02_controls
 import sample03_image
 import sample04_animation
+# import sample15_animation_easings
 import sample05_fonts
 import sample06_timers
 import sample07_collections
@@ -27,16 +18,18 @@ import sample08_events
 import sample09_docking_tabs
 import sample10_text
 import sample11_expanded_views
+import sample12_menus
+import sample13_drag_and_drop
+import sample14_layout
+
 
 const isMobile = defined(ios) or defined(android)
 
 proc startApplication() =
-    var mainWindow : Window
-
-    when isMobile:
-        mainWindow = newFullscreenWindow()
-    else:
-        mainWindow = newWindow(newRect(40, 40, 800, 600))
+    let mainWindow = when isMobile:
+            newFullscreenWindow()
+        else:
+            newWindow(newRect(40, 40, 800, 600))
 
     mainWindow.title = "NimX Sample"
 

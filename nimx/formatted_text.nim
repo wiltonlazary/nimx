@@ -1,5 +1,5 @@
 import unicode, algorithm, strutils, sequtils
-import nimx.font, nimx.types, nimx.unistring, nimx.utils.lower_bound
+import nimx/font, nimx/types, nimx/unistring, nimx/utils/lower_bound
 
 
 type
@@ -8,6 +8,7 @@ type
         mAttributes: seq[Attributes]
         lines: seq[LineInfo]
         mTotalHeight: float32
+        mTotalWidth: float32
         horizontalAlignment*: HorizontalTextAlignment
         verticalAlignment*: VerticalAlignment
         mBoundingSize: Size
@@ -71,10 +72,7 @@ proc defaultAttributes(): Attributes =
     result.textColor = blackColor()
 
 proc `text=`*(t: FormattedText, s: string) =
-    if s.isNil:
-        t.mText = ""
-    else:
-        t.mText = s
+    t.mText = s
     t.cacheValid = false
 
 template text*(t: FormattedText): string = t.mText
@@ -102,6 +100,7 @@ proc updateCache(t: FormattedText) =
     t.shadowAttrs.setLen(0)
     t.strokeAttrs.setLen(0)
     t.mTotalHeight = 0
+    t.mTotalWidth = 0
 
     var curLineInfo: LineInfo
     curLineInfo.height = t.mAttributes[0].font.height
@@ -168,6 +167,7 @@ proc updateCache(t: FormattedText) =
                     let tmp = curLineInfo # JS bug workaround. Copy to temp object.
                     t.lines.add(tmp)
                     t.mTotalHeight += curLineInfo.height + t.mLineSpacing
+                    t.mTotalWidth = max(t.mTotalWidth, curLineInfo.width)
                     curLineInfo.top = t.mTotalHeight
                     curLineInfo.startByte = i
                     curLineInfo.startRune = curRune + 1
@@ -181,6 +181,7 @@ proc updateCache(t: FormattedText) =
                 let tmp = curLineInfo # JS bug workaround. Copy to temp object.
                 t.lines.add(tmp)
                 t.mTotalHeight += curLineInfo.height + t.mLineSpacing
+                t.mTotalWidth = max(t.mTotalWidth, curLineInfo.width)
                 curLineInfo.top = t.mTotalHeight
                 curLineInfo.startByte = curWordStartByte
                 curLineInfo.startRune = curWordStartRune
@@ -213,6 +214,7 @@ proc updateCache(t: FormattedText) =
         let tmp = curLineInfo # JS bug workaround. Copy to temp object.
         t.lines.add(tmp)
         t.mTotalHeight += curLineInfo.height + t.mLineSpacing
+        t.mTotalWidth = max(t.mTotalWidth, curLineInfo.width)
         curLineInfo.hidden = not canAddWordWithHeight()
 
     # echo "Cache updated for ", t.mText
@@ -273,6 +275,10 @@ proc totalHeight*(t: FormattedText): float32 =
     t.updateCacheIfNeeded()
     t.mTotalHeight
 
+proc totalWidth*(t: FormattedText): float32 =
+    t.updateCacheIfNeeded()
+    t.mTotalWidth
+
 proc prepareAttributes(t: FormattedText, a: int): int =
     result = lowerBoundIt(t.mAttributes, 0, t.mAttributes.high, cmp(it.startRune, a) < 0)
     if result < t.mAttributes.len and t.mAttributes[result].startRune == a:
@@ -318,6 +324,11 @@ proc setTextColorInRange*(t: FormattedText, a, b: int, color1, color2: Color) =
         t.mAttributes[i].textColor = color1
         t.mAttributes[i].textColor2 = color2
         t.mAttributes[i].isTextGradient = true
+
+proc setTextAlphaInRange*(t: FormattedText, a, b: int, alpha: float32) =
+    for i in t.attrsInRange(a, b):
+        t.mAttributes[i].textColor.a = alpha
+        t.mAttributes[i].textColor2.a = alpha
 
 proc setShadowInRange*(t: FormattedText, a, b: int, color: Color, offset: Size, radius, spread: float32) =
     for i in t.attrsInRange(a, b):
@@ -536,7 +547,7 @@ proc trackingOfRuneAtPos*(t: FormattedText, pos: int): float32 =
 ################################################################################
 # Drawing
 ################################################################################
-import nimx.context, nimx.composition
+import nimx/context, nimx/composition
 
 
 const GRADIENT_ENABLED = (1 shl 0) # OPTION_1
@@ -660,33 +671,48 @@ proc forEachLineAttribute(c: GraphicsContext, origP: Point, t: FormattedText, cb
 
         if not lastAttrFont.isNil:
             let nextLine = curLine + 1
-            if nextLine < numLines and t.lines[nextLine].hidden:
+            let isNextLineHidden = nextLine < numLines and t.lines[nextLine].hidden
+
+            if (curLine == numLines - 1 or isNextLineHidden) and t.mTruncationBehavior != tbNone:
+                let lastIndex = lastAttrEndIndex
                 var symbols = ""
+                var runeWidth = 0.0
 
                 if t.mTruncationBehavior == tbEllipsis:
-                    var c: Rune
-                    var i = 0
                     symbols = "..."
-                    fastRuneAt(symbols, i, c, true)
-                    let runeWidth = lastAttrFont.getAdvanceForRune(c)
-                    if t.horizontalAlignment == haCenter:
-                        let halfRuneWidth = runeWidth * (symbols.len / 2)
-                        if p.x < halfRuneWidth:
-                            if lastAttrEndIndex >= lastAttrStartIndex + symbols.len:
-                                lastAttrEndIndex -= symbols.len
-                            else:
-                                lastAttrEndIndex = lastAttrStartIndex
-                        else:
-                            p.x -= halfRuneWidth
-                    else:
-                        if t.mBoundingSize.width < t.lines[curLine].width + runeWidth * 3:
-                            if lastAttrEndIndex >= lastAttrStartIndex + symbols.len:
-                                lastAttrEndIndex -= symbols.len
-                            else:
-                                lastAttrEndIndex = lastAttrStartIndex
+                    runeWidth = lastAttrFont.getAdvanceForRune(Rune(symbols[0]))
 
-                cb(c, t, p, curLine, lastCurAttrIndex, t.mText.substr(lastAttrStartIndex, lastAttrEndIndex) & symbols)
-                break
+                let ellipsisWidth = runeWidth * symbols.len.float
+                var width = ellipsisWidth
+                var index = lastAttrStartIndex
+                var isCut = false
+                while index <= lastIndex:
+                    var r: Rune
+                    fastRuneAt(t.mText, index, r, true)
+                    var w = lastAttrFont.getAdvanceForRune(r)
+                    if w + width < t.mBoundingSize.width:
+                        width = width + w
+                        lastAttrEndIndex = index - 1
+                    else:
+                        isCut = true
+                        break
+
+                if isNextLineHidden:
+                    isCut = true
+
+                if not isCut:
+                    width -= ellipsisWidth
+
+                if t.horizontalAlignment == haCenter:
+                    p.x = (t.mBoundingSize.width - width) * 0.5
+                elif t.horizontalAlignment == haRight:
+                    p.x = t.mBoundingSize.width - width
+
+                if not isCut:
+                    cb(c, t, p, curLine, lastCurAttrIndex, t.mText.substr(lastAttrStartIndex, lastAttrEndIndex))
+                else:
+                    cb(c, t, p, curLine, lastCurAttrIndex, t.mText.substr(lastAttrStartIndex, lastAttrEndIndex) & symbols)
+                    break
             else:
                 cb(c, t, p, curLine, lastCurAttrIndex, t.mText.substr(lastAttrStartIndex, lastAttrEndIndex))
 
@@ -717,8 +743,10 @@ proc drawShadow(c: GraphicsContext, origP: Point, t: FormattedText) =
 
             compositionDrawingDefinitions(cc, c, gl)
 
-            setUniform("shadowRadius", t.mAttributes[curAttrIndex].shadowRadius / 15.0)
-            setUniform("shadowSpread", t.mAttributes[curAttrIndex].shadowSpread)
+            const minShadowSpread = 0.17 # make shadow border smooth and great again
+
+            setUniform("shadowRadius", t.mAttributes[curAttrIndex].shadowRadius / 8.0)
+            setUniform("shadowSpread", t.mAttributes[curAttrIndex].shadowSpread + minShadowSpread)
             setUniform("fillColor", c.fillColor)
 
             gl.uniformMatrix4fv(uniformLocation("uModelViewProjectionMatrix"), false, c.transform)
@@ -756,7 +784,7 @@ proc drawStroke(c: GraphicsContext, origP: Point, t: FormattedText) =
             setUniform("strokeSize", min(t.mAttributes[curAttrIndex].strokeSize / 15, magicStrokeMaxSizeCoof))
 
             if t.mAttributes[curAttrIndex].isStrokeGradient:
-                setUniform("point_y", p.y)
+                setUniform("point_y", p.y - t.lines[curLine].baseline)
                 setUniform("size_y", t.lines[curLine].height)
                 setUniform("colorFrom", t.mAttributes[curAttrIndex].strokeColor1)
                 setUniform("colorTo", t.mAttributes[curAttrIndex].strokeColor2)
@@ -798,7 +826,7 @@ proc drawText*(c: GraphicsContext, origP: Point, t: FormattedText) =
 
             compositionDrawingDefinitions(cc, c, gl)
 
-            setUniform("point_y", p.y)
+            setUniform("point_y", p.y - t.lines[curLine].baseline)
             setUniform("size_y", t.lines[curLine].height)
             setUniform("colorFrom", t.mAttributes[curAttrIndex].textColor)
             setUniform("colorTo", t.mAttributes[curAttrIndex].textColor2)

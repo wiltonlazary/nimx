@@ -2,7 +2,7 @@
 import math
 import macros
 import algorithm
-import system_logger
+import logging
 import times
 
 type LoopPattern* = enum
@@ -17,8 +17,10 @@ type CancelBehavior* = enum
     cbJumpToEnd
     cbContinueUntilEndOfLoop
 
-type TimingFunction = proc(time: float): float
-type AnimationFunction = proc(progress: float)
+type TimingFunction* = proc(time: float): float
+type AnimationFunction* = proc(progress: float)
+
+const MIN_LOOP_DURATION:float = 0.0
 
 type ProgressHandler = object
     handler: proc()
@@ -72,7 +74,6 @@ proc newAnimation*(): Animation =
     result.init()
 
 proc addHandler(s: var seq[ProgressHandler], ph: ProgressHandler) =
-    if s.isNil: s = newSeq[ProgressHandler]()
     s.insert(ph,
         s.lowerBound(ph, proc (a, b: ProgressHandler): int = cmp(a.progress, b.progress)))
 
@@ -87,12 +88,12 @@ proc addTotalProgressHandler*(a: Animation, progress: float, callIfCancelled: bo
         callIfCancelled: callIfCancelled))
 
 proc removeTotalProgressHandlers*(a: Animation) =
-    if not a.totalProgressHandlers.isNil: a.totalProgressHandlers.setLen(0)
+    a.totalProgressHandlers.setLen(0)
 
 proc removeLoopProgressHandlers*(a: Animation) =
-    if not a.loopProgressHandlers.isNil: a.loopProgressHandlers.setLen(0)
+    a.loopProgressHandlers.setLen(0)
 
-proc `continueUntilEndOfLoopOnCancel=`*(a: Animation, bval: bool)=
+proc `continueUntilEndOfLoopOnCancel=`*(a: Animation, bval: bool) =
     if bval:
         a.cancelBehavior = cbContinueUntilEndOfLoop
     else:
@@ -146,8 +147,11 @@ method onProgress*(a: Animation, p: float) {.base.} =
         a.onAnimate(a.curvedProgress(p))
 
 proc loopProgress(a: Animation, t: float): float=
-    let duration = t - a.startTime
-    doAssert(duration > -0.0001, $duration)
+    var duration = t - a.startTime
+    if duration < MIN_LOOP_DURATION:
+        error("Invalid duration - ", duration, " set to min value ",  MIN_LOOP_DURATION)
+        duration = MIN_LOOP_DURATION
+
     a.curLoop = a.currentLoopForTotalDuration(duration)
     result = (duration mod a.loopDuration) / a.loopDuration
 
@@ -158,17 +162,17 @@ proc totalProgress(a: Animation, t: float): float=
 
 method checkHandlers(a: Animation, oldLoop: int, lp, tp: float) {.base.} =
     if a.curLoop > oldLoop:
-        if not a.loopProgressHandlers.isNil:
+        if a.loopProgressHandlers.len != 0:
             processRemainingHandlersInLoop(a.loopProgressHandlers, a.lphIt, stopped=false)
 
     if not a.finished:
-        if not a.loopProgressHandlers.isNil: processHandlers(a.loopProgressHandlers, a.lphIt, lp)
-        if not a.totalProgressHandlers.isNil: processHandlers(a.totalProgressHandlers, a.tphIt, tp)
+        if a.loopProgressHandlers.len != 0: processHandlers(a.loopProgressHandlers, a.lphIt, lp)
+        if a.totalProgressHandlers.len != 0: processHandlers(a.totalProgressHandlers, a.tphIt, tp)
 
     if a.finished:
-        if a.curLoop == oldLoop and not a.loopProgressHandlers.isNil and a.lphIt < a.loopProgressHandlers.len:
+        if a.curLoop == oldLoop and a.loopProgressHandlers.len != 0 and a.lphIt < a.loopProgressHandlers.len:
             processRemainingHandlersInLoop(a.loopProgressHandlers, a.lphIt, stopped=true)
-        if not a.totalProgressHandlers.isNil and a.tphIt < a.totalProgressHandlers.len:
+        if a.totalProgressHandlers.len != 0 and a.tphIt < a.totalProgressHandlers.len:
             processRemainingHandlersInLoop(a.totalProgressHandlers, a.tphIt, stopped=true)
 
 proc loopFinishCheck(a: Animation, lp, tp: var float)=
@@ -188,7 +192,7 @@ proc loopFinishCheck(a: Animation, lp, tp: var float)=
         lp = 1.0
         tp = 1.0
 
-method tick*(a: Animation, t: float) =
+method tick*(a: Animation, t: float) {.base.} =
     if a.pauseTime != 0: return
 
     let oldLoop = a.curLoop
@@ -225,7 +229,7 @@ proc bezierXForProgress*(x1, y1, x2, y2, p: float): float {.inline.} =
 
     # Newton raphson iteration
     var aGuessT = p
-    for i in 0 .. < 4:
+    for i in 0 ..< 4:
         var currentSlope = getSlope(aGuessT, x1, x2)
         if currentSlope == 0.0: break
         var currentX = calcBezier(aGuessT, x1, x2) - p
@@ -248,14 +252,14 @@ template interpolate*(fromValue, toValue: SomeInteger, p: float): auto = fromVal
 when defined(js): ## workaround for int64 in javascript
     template interpolate*(fromValue, toValue: int64, p: float): int64 = fromValue + int(float(toValue - fromValue) * p)
 
-template setInterpolationAnimation(a: Animation, ident: untyped, fromVal, toVal: untyped, body: untyped): typed =
+template setInterpolationAnimation(a: Animation, ident: untyped, fromVal, toVal: untyped, body: untyped) =
     let fv = fromVal
     let tv = toVal
     a.onAnimate = proc(p: float) =
         let ident {.inject, hint[XDeclaredButNotUsed]: off.} = interpolate(fv, tv, p)
         body
 
-macro animate*(a: Animation, what: untyped, how: untyped): typed =
+macro animate*(a: Animation, what: untyped, how: untyped): untyped =
     let ident = what[1]
     let fromVal = what[2][1]
     let toVal = what[2][2]
@@ -513,7 +517,7 @@ method tick*(a: MetaAnimation, t: float) =
 
     if a.pauseTime != 0 : return
 
-    if a.animations.isNil or a.animations.len == 0:
+    if a.animations.len == 0:
         a.finished = true
         return
 
@@ -560,7 +564,7 @@ method tick*(a: MetaAnimation, t: float) =
             a.curIndex = -1
             inc a.curLoop
 
-            if not a.loopProgressHandlers.isNil:
+            if a.loopProgressHandlers.len != 0:
                 processRemainingHandlersInLoop(a.loopProgressHandlers, a.lphIt, stopped=false)
 
         elif ((a.loopPattern == lpEndToStartToEnd or a.loopPattern == lpStartToEndToStart) and
@@ -569,13 +573,13 @@ method tick*(a: MetaAnimation, t: float) =
             a.curIndex = -1
             inc a.curLoop
 
-            if not a.loopProgressHandlers.isNil:
+            if a.loopProgressHandlers.len != 0:
                 processRemainingHandlersInLoop(a.loopProgressHandlers, a.lphIt, stopped=false)
         else:
             a.finished = true
-            if not a.loopProgressHandlers.isNil and a.lphIt < a.loopProgressHandlers.len:
+            if a.loopProgressHandlers.len != 0 and a.lphIt < a.loopProgressHandlers.len:
                 processRemainingHandlersInLoop(a.loopProgressHandlers, a.lphIt, stopped=true)
-            if not a.totalProgressHandlers.isNil and a.tphIt < a.totalProgressHandlers.len:
+            if a.totalProgressHandlers.len != 0 and a.tphIt < a.totalProgressHandlers.len:
                 processRemainingHandlersInLoop(a.totalProgressHandlers, a.tphIt, stopped=true)
 
 
@@ -609,6 +613,7 @@ when true:
     ## http://easings.net
     proc linear*(time: float): float =
         result = time
+
     ## -------------------------------------------------------------
     proc sineEaseIn*(time: float): float =
         result = -1 * cos(time * PI_X2) + 1
@@ -725,6 +730,9 @@ when true:
             var s = period / 4
             var var_time = time - 1
             result = -pow(2, 10 * var_time) * sin((var_time - s) * PI_X2 / period)
+    proc elasticEaseIn*(period: float) : TimingFunction =
+        result = proc(p:float): float =
+            elasticEaseIn(p, period)
 
     proc elasticEaseOut*(time, period: float): float =
         if time <= 0.0001 or 0 >= 0.9999:
@@ -732,6 +740,9 @@ when true:
         else:
             var s = period / 4
             result = pow(2, -10 * time) * sin((time - s) * PI_X2 / period) + 1
+    proc elasticEaseOut*(period: float) : TimingFunction =
+        result = proc(p:float): float =
+            elasticEaseOut(p, period)
 
     proc elasticEaseInOut*(time, period: float): float =
         if time <= 0.0001 or 0 >= 0.9999:
@@ -748,14 +759,22 @@ when true:
                 result = -0.5 * pow(2, 10 * var_time) * sin((var_time - s) * PI_X2/nPeriod)
             else:
                 result = pow(2, -10 * var_time) * sin((var_time - s) * PI_X2/nPeriod) * 0.5 + 1
-
+    proc elasticEaseInOut*(period: float) : TimingFunction =
+        result = proc(p:float): float =
+            elasticEaseInOut(p, period)
     ## -------------------------------------------------------------
     proc backEaseIn*(time: float, overshoot: float = 1.70158): float =
         result = time * time * ((overshoot + 1) * time - overshoot)
+    proc backEaseIn*() : TimingFunction =
+        result = proc(p:float): float =
+            backEaseIn(p, 1.70158)
 
     proc backEaseOut*(time: float, overshoot:float = 1.70158): float =
         var var_time = time - 1
         result = var_time * var_time * ((overshoot + 1) * var_time + overshoot) + 1
+    proc backEaseOut*() : TimingFunction =
+        result = proc(p:float): float =
+            backEaseOut(p, 1.70158)
 
     proc backEaseInOut*(time: float, overshoot: float = 1.70158): float =
         var var_time = time * 2
@@ -764,6 +783,9 @@ when true:
         else:
             var_time -= 2
             result = (var_time * var_time * ((overshoot + 1) * var_time + overshoot)) / 2 + 1
+    proc backEaseInOut*() : TimingFunction =
+        result = proc(p:float): float =
+            backEaseInOut(p, 1.70158)
 
     ## -------------------------------------------------------------
     proc bounceTime(time: float): float =
@@ -791,7 +813,7 @@ when true:
             result = ( 1 - bounceTime(1 - var_time)) * 0.5
         else:
             result = bounceTime(time * 2 - 1) * 0.5 + 0.5
-
+#
     ## -------------------------------------------------------------
     proc quadraticIn*(time: float): float =
         result = pow(time, 2)

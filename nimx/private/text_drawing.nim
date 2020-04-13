@@ -1,5 +1,9 @@
 import unicode
-import nimx.font, nimx.composition, nimx.context, nimx.types
+import nimx/font, nimx/composition, nimx/context, nimx/types
+
+var textSubpixelDrawing = true
+proc enableTextSubpixelDrawing*(state: bool) =
+    textSubpixelDrawing = state
 
 let fontComposition = newComposition("""
 attribute vec4 aPosition;
@@ -231,7 +235,7 @@ proc drawText*(c: GraphicsContext, font: Font, pt: var Point, text: string) =
     # assume orthographic projection with units = screen pixels, origin at top left
     let gl = c.gl
     var cc : CompiledComposition
-    var subpixelDraw = true
+    var subpixelDraw = textSubpixelDrawing
 
     if hasPostEffect():
         subpixelDraw = false
@@ -242,8 +246,11 @@ proc drawText*(c: GraphicsContext, font: Font, pt: var Point, text: string) =
     let preScale = 1.0 / 320.0 # magic constant...
 
     if subpixelDraw:
-        cc = gl.getCompiledComposition(fontSubpixelCompositionWithDynamicBase)
+        if gl.getParami(gl.BLEND_SRC_ALPHA) != gl.SRC_ALPHA.GLint or gl.getParami(gl.BLEND_DST_ALPHA) != gl.ONE_MINUS_SRC_ALPHA.GLint:
+            subpixelDraw = false
 
+    if subpixelDraw:
+        cc = gl.getCompiledComposition(fontSubpixelCompositionWithDynamicBase)
         gl.blendColor(c.fillColor.r, c.fillColor.g, c.fillColor.b, c.fillColor.a)
         gl.blendFunc(gl.CONSTANT_COLOR, gl.ONE_MINUS_SRC_COLOR)
     else:

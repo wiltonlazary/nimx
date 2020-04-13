@@ -2,11 +2,10 @@ import types
 import opengl
 import system_logger
 import matrixes
-import font
 import image
 import math
 import portable_gl
-import nimsl.nimsl
+import nimsl/nimsl
 
 export matrixes
 
@@ -67,9 +66,6 @@ proc newShaderProgram*(gl: GL, vs, fs: string,
         result = invalidProgram
     elif info.len > 0:
         logi "Program linked: ", info
-
-proc newShaderProgram(gl: GL, vs, fs: string): ProgramRef {.inline.} = # Deprecated. kinda.
-    gl.newShaderProgram(vs, fs, [(saPosition.GLuint, "position")])
 
 when defined js:
     type Transform3DRef = ref Transform3D
@@ -206,9 +202,6 @@ proc setColorUniform*(c: GraphicsContext, loc: UniformLocation, color: Color) =
 proc setColorUniform*(c: GraphicsContext, program: ProgramRef, name: cstring, color: Color) =
     c.setColorUniform(c.gl.getUniformLocation(program, name), color)
 
-template setFillColorUniform(c: GraphicsContext, program: ProgramRef) =
-    c.setColorUniform(program, "fillColor", c.fillColor)
-
 proc setRectUniform*(c: GraphicsContext, loc: UniformLocation, r: Rect) =
     when defined js:
         c.gl.uniform4fv(loc, [r.x, r.y, r.width, r.height])
@@ -236,7 +229,7 @@ uniform float uStrokeWidth;
 uniform float uRadius;
 
 void compose() {
-    drawShape(sdRoundedRect(bounds, uRadius), uStrokeColor);
+    drawInitialShape(sdRoundedRect(bounds, uRadius), uStrokeColor);
     drawShape(sdRoundedRect(insetRect(bounds, uStrokeWidth), uRadius - uStrokeWidth), uFillColor);
 }
 """
@@ -248,10 +241,10 @@ proc drawRoundedRect*(c: GraphicsContext, r: Rect, radius: Coord) =
         setUniform("uStrokeWidth", c.strokeWidth)
         setUniform("uRadius", radius)
 
-proc drawRect(bounds, uFillColor, uStrokeColor: vec4,
+proc drawRect(bounds, uFillColor, uStrokeColor: Vec4,
                     uStrokeWidth: float32,
-                    vPos: vec2): vec4 =
-    result.drawShape(sdRect(vPos, bounds), uStrokeColor);
+                    vPos: Vec2): Vec4 =
+    result.drawInitialShape(sdRect(vPos, bounds), uStrokeColor);
     result.drawShape(sdRect(vPos, insetRect(bounds, uStrokeWidth)), uFillColor);
 
 var rectComposition = newCompositionWithNimsl(drawRect)
@@ -262,10 +255,10 @@ proc drawRect*(c: GraphicsContext, r: Rect) =
         setUniform("uStrokeColor", if c.strokeWidth == 0: c.fillColor else: c.strokeColor)
         setUniform("uStrokeWidth", c.strokeWidth)
 
-proc drawEllipse(bounds, uFillColor, uStrokeColor: vec4,
+proc drawEllipse(bounds, uFillColor, uStrokeColor: Vec4,
                     uStrokeWidth: float32,
-                    vPos: vec2): vec4 =
-    result.drawShape(sdEllipseInRect(vPos, bounds), uStrokeColor);
+                    vPos: Vec2): Vec4 =
+    result.drawInitialShape(sdEllipseInRect(vPos, bounds), uStrokeColor);
     result.drawShape(sdEllipseInRect(vPos, insetRect(bounds, uStrokeWidth)), uFillColor);
 
 var ellipseComposition = newCompositionWithNimsl(drawEllipse)
@@ -388,7 +381,7 @@ proc drawNinePartImage*(c: GraphicsContext, i: Image, toRect: Rect, ml, mt, mr, 
         gl.useProgram(cc.program)
         compositionDrawingDefinitions(cc, c, gl)
 
-        setUniform("uAlpha", alpha)
+        setUniform("uAlpha", alpha * c.alpha)
 
         gl.uniformMatrix4fv(uniformLocation("uModelViewProjectionMatrix"), false, c.transform)
         setupPosteffectUniforms(cc)
@@ -405,6 +398,70 @@ proc drawNinePartImage*(c: GraphicsContext, i: Image, toRect: Rect, ml, mt, mr, 
         c.bindVertexData(componentsCount * vertexCount)
         gl.vertexAttribPointer(saPosition.GLuint, componentsCount, gl.FLOAT, false, 0, 0)
         gl.drawElements(gl.TRIANGLE_STRIP, vertexCount, gl.UNSIGNED_SHORT)
+
+
+let simpleComposition = newComposition("""
+attribute vec4 aPosition;
+uniform mat4 uModelViewProjectionMatrix;
+
+void main() {
+    gl_Position = uModelViewProjectionMatrix * vec4(aPosition.xy, 0, 1);
+}
+""",
+"""
+#ifdef GL_ES
+#extension GL_OES_standard_derivatives : enable
+precision mediump float;
+#endif
+uniform vec4 uStrokeColor;
+
+void compose() {
+    gl_FragColor = uStrokeColor;
+}
+""", false)
+
+proc bezierPoint(p0, p1, p2, p3, t: float32): float32 =
+  result = (pow((1-t), 3.0) * p0) +
+    (3 * pow((1-t),2) * t * p1) +
+    (3 * (1-t) * t * t * p2) +
+    (pow(t, 3) * p3)
+
+proc drawBezier*(c: GraphicsContext, p0, p1, p2, p3: Point) =
+    let gl = c.gl
+    var cc = gl.getCompiledComposition(simpleComposition)
+
+    template setVertex(index: int, p: Point) =
+        c.vertexes[index * 2 + 0] = p.x.GLfloat
+        c.vertexes[index * 2 + 1] = p.y.GLfloat
+
+    let vertexCount = 300
+    for i in 0..<vertexCount:
+        let t = i / (vertexCount - 1)
+        let p = newPoint(bezierPoint(p0.x, p1.x, p2.x, p3.x, t), bezierPoint(p0.y, p1.y, p2.y, p3.y, t))
+        setVertex(i, p)
+
+    gl.useProgram(cc.program)
+    compositionDrawingDefinitions(cc, c, gl)
+
+    gl.uniformMatrix4fv(uniformLocation("uModelViewProjectionMatrix"), false, c.transform)
+    setUniform("uStrokeColor", c.strokeColor)
+    setupPosteffectUniforms(cc)
+
+    const componentsCount = 2
+    gl.enableVertexAttribArray(saPosition.GLuint)
+    c.bindVertexData(componentsCount * vertexCount)
+    gl.vertexAttribPointer(saPosition.GLuint, componentsCount, gl.FLOAT, false, 0, 0)
+
+    gl.enable(GL_LINE_SMOOTH)
+    when not defined(js):
+      glHint(GL_LINE_SMOOTH_HINT, GL_NICEST)
+
+      glLineWidth(c.strokeWidth)
+
+    gl.drawArrays(GL_LINE_STRIP, 0.GLint, vertexCount.GLsizei)
+    when not defined(js):
+      glLineWidth(1.0)
+
 
 var lineComposition = newComposition """
 uniform float uStrokeWidth;
@@ -473,6 +530,7 @@ void compose() {
 """
 
 proc drawArc*(c: GraphicsContext, center: Point, radius: Coord, fromAngle, toAngle: Coord) =
+    if abs(fromAngle - toAngle) < 0.0001: return
     var fromAngle = fromAngle
     var toAngle = toAngle
     fromAngle = fromAngle mod (2 * Pi)
@@ -490,6 +548,24 @@ proc drawArc*(c: GraphicsContext, center: Point, radius: Coord, fromAngle, toAng
         setUniform("uStrokeColor", if c.strokeWidth == 0: c.fillColor else: c.strokeColor)
         setUniform("uStartAngle", fromAngle)
         setUniform("uEndAngle", toAngle)
+
+var triangleComposition = newComposition """
+uniform float uAngle;
+uniform vec4 uColor;
+void compose() {
+    vec2 center = vec2(bounds.x + bounds.z / 2.0, bounds.y + bounds.w / 2.0 - 1.0);
+    float triangle = sdRegularPolygon(center, 4.0, 3, uAngle);
+    drawShape(triangle, uColor);
+}
+"""
+
+proc drawTriangle*(c: GraphicsContext, rect: Rect, angleRad: Coord) =
+    ## Draws equilateral triangle with current `fillColor`, pointing at `angleRad`
+    var color = c.fillColor
+    color.a *= c.alpha
+    triangleComposition.draw rect:
+        setUniform("uAngle", angleRad)
+        setUniform("uColor", color)
 
 # TODO: This should probaly be a property of current context!
 var clippingDepth: GLint = 0
@@ -524,5 +600,5 @@ template withClippingRect*(c: GraphicsContext, r: Rect, body: typed) =
     body
     c.applyClippingRect(r, false)
 
-import private.text_drawing
+import private/text_drawing
 export text_drawing

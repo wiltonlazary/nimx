@@ -6,6 +6,14 @@ elif defined(windows):
     import pasteboard_win
     export pasteboard_win
 
+elif defined(js) or defined(emscripten):
+    import pasteboard_web
+    export pasteboard_web
+
+elif defined(linux) and not defined(android):
+    import pasteboard_x11
+    export pasteboard_x11
+
 else:
     import abstract_pasteboard
     export abstract_pasteboard

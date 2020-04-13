@@ -15,23 +15,13 @@ Cross-platform GUI framework in `Nim <https://github.com/nim-lang/nim>`_.
 
 .. image:: ./doc/sample-screenshot.png
 
-Quick start
-===========
-
-Installation
-------------
-.. code-block:: sh
-
-    nimble install nimx
-
 Usage
 ------------
 .. code-block:: nim
 
     # File: main.nim
-    import nimx.window
-    import nimx.text_field
-    import nimx.system_logger # Required because of Nim bug (#4433)
+    import nimx/window
+    import nimx/text_field
 
     proc startApp() =
         # First create a window. Window is the root of view hierarchy.
@@ -48,13 +38,6 @@ Usage
 
 Running
 ------------
-Unix:
-
-.. code-block:: sh
-
-    nim c -r --noMain --threads:on main.nim
-
-Windows:
 
 .. code-block:: sh
 
@@ -62,7 +45,7 @@ Windows:
 
 Supported target platforms
 ------------
-Nimx officially supports Linux, MacOS, Windows, Android, iOS, Javascript (with Nim JS backend) and Asm.js (with Nim C backend and `Emscripten <http://emscripten.org>`_).
+Nimx officially supports Linux, MacOS, Windows, Android, iOS, Javascript (with Nim JS backend) and Asm.js/WebAssembly (with Nim C backend and `Emscripten <http://emscripten.org>`_).
 
 Troubleshooting
 ------------
@@ -72,11 +55,13 @@ Running nimx samples
 ====================
 .. code-block:: sh
 
-    cd $(nimble path nimx | tail -n 1)/test
+    git clone https://github.com/yglukhov/nimx
+    cd nimx
+    nimble install -dy
     nake # Build and run on the current platform
     # or
     nake js # Build and run in default web browser
 
 Reference
 ====================
-TODO
+See `the docs <./doc>`_ for more information.
